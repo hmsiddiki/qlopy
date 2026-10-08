@@ -1,0 +1,26 @@
+/* Fix TinyMCE dropdown position for blocks/format select */
+.tox .tox-menu {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.tox .tox-menu {
+  position: absolute !important;
+  z-index: 9999 !important;
+}
+
+/* Ensure dropdown appears above editor, not at screen bottom */
+.tox .tox-menu.tox-menu--open {
+  top: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  right: auto !important;
+}
+
+/* Responsive: if dropdown would overflow bottom, show above */
+@media (max-height: 700px) {
+  .tox .tox-menu.tox-menu--open {
+    bottom: 100% !important;
+    top: auto !important;
+  }
+}

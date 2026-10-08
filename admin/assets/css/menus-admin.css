@@ -1,0 +1,19 @@
+/* Menus admin CSS moved from inline styles */
+.dd { background: #f8f9fa; padding: 8px; border-radius: 4px; }
+.dd-item { margin: 6px 0; background: #ffffff; border: 1px solid #e6e6e6; border-radius: 4px; }
+.dd-handle { background: transparent; border: none; }
+.dd-handle .menu-title { display:block; }
+.dd-handle .menu-url { font-size: 0.85em; color: #6c757d; }
+.item-fields { background: #fff; }
+.btns .btn { margin-left: 6px; }
+.btns .remove { line-height: 1; padding: 0.25rem 0.5rem; }
+/* Dynamic boxes: vertical alignment and spacing */
+.dynamic-box .card-body label { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+
+
+
+/* Responsive helper: apply margin-left:auto on large screens */
+.ml-auto-lg { margin-left: 0; }
+@media (min-width: 992px) { .ml-auto-lg { margin-left: auto !important; } }
+#menuSelect, #locationSelect, .menu-control { width: auto; display: inline-block; }
+.assigned-note { font-style: italic; color: #6c757d; margin-left:8px;    font-size: 0.7rem; }

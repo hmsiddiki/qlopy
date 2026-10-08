@@ -1,0 +1,587 @@
+ /* Reduce unexpected scroll jumps due to scroll anchoring and overscroll during UI popups */
+  html, body { overflow-anchor: none; overscroll-behavior-y: contain; overscroll-behavior-x: contain; }
+  .tox, .tox-editor-container, .tox-toolbar, .tox-menu, .tox-collection { overflow-anchor: none; }
+  /* Ensure admin content container does not anchor scroll when elements appear/disappear */
+  .content-editor-wrap, .qpmeta-field-wrap { overflow-anchor: none; }
+/* Reset and base */
+html, body {
+ width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Wrapper for sidebar and content with flexbox */
+#admin-wrapper {
+  display: flex;
+  height: auto;
+  /*min-height: 100vh;*/
+      margin-bottom: 75px;
+  margin-top: 56px; /* Offset fixed navbar height */
+}
+.main_navs_color { background-color:#ededed !important; }
+.app-header {
+  background-color: #ededed;
+  z-index: 1032;
+}
+#sidebarToggleBtn {
+    cursor: pointer;
+    color: #252424;
+}
+/* Sidebar styles */
+#sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 190px;
+  height: 100vh;
+  background: #343a40;
+  color: #fff;
+  overflow-y: auto;
+  z-index: 1031;
+  transition: width 0.3s ease, left 0.3s ease;
+}
+
+/* Collapsed sidebar */
+#sidebar.collapsed {
+  width: 48px;
+}
+#sidebar:hover.collapsed {
+width: 190px;
+}
+#sidebar .nav {
+    overflow: hidden;
+}
+/* Sidebar links */
+#sidebar .nav-link {
+  color: #6f6f6f;
+  padding: 0.55rem 0.9rem;
+  display: flex;
+  align-items: center;
+  transition: background-color 0.2s, color 0.2s;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+#sidebar .submenu .nav-link { 
+padding: 0.45rem 0.6rem;
+}
+#sidebar .parent_menu_title {
+margin-left: 0.5rem;
+}
+#sidebar .nav-link.active,
+#sidebar .nav-link:hover {
+      background-color: #d1d1d1;
+    color: #252424;
+  text-decoration: none;
+}
+
+/* Icon spacing */
+#sidebar .nav-link i {
+  margin-right: 12px;
+  min-width: 20px;
+  text-align: center;
+  font-size: 1.1rem;
+}
+#sidebar .nav-link>img {
+      margin-right: 8px;
+    min-width: 20px;
+    text-align: center;
+    font-size: 1.1rem;
+    width: 24px;
+}
+
+/* Hide text labels when sidebar is collapsed */
+#sidebar.collapsed .nav-link span {
+  display: none;
+}
+
+/* Submenu padding */
+#sidebar .submenu {
+  padding-left: 1.5rem;
+  background-color: #dfdfdf;
+}
+
+/* Reduce padding on submenu links when sidebar collapsed */
+#sidebar.collapsed .submenu {
+  padding-left: 0;
+}
+
+/* Content area styles */
+#content {
+  /*flex: 1 1 auto;*/
+  margin-left: 190px; /* Same as sidebar width */
+  padding: 20px;
+ /* min-height: calc(100vh - 130px);*/
+  overflow-wrap: break-word;
+  box-sizing: border-box;
+  transition: margin-left 0.3s ease;
+}
+#foot {
+    margin-left: 190px;
+    width: auto;
+}
+/* Content margin adjusts when sidebar is collapsed */
+#content.collapsed,#foot.collapsed {
+  margin-left: 48px;
+}
+
+/* Responsive sidebar and content adjustment */
+@media (max-width: 768px) {
+  #sidebar {
+    left: -190px;
+    width: 190px !important;
+  }
+  #sidebar.active,
+  #sidebar.collapsed {
+    left: 0;
+  }
+  #content,
+  #content.collapsed ,#foot.collapsed,#foot {
+    margin-left: 0 !important;
+  }
+  #content.active {
+    margin-left: 190px !important;
+  }
+  .app-header-separator , .app-footer-separator {
+      margin-left: 0 !important;
+    display:none;
+  }
+}
+
+
+
+/* Optional scrollbar styling for sidebar */
+#sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+
+#sidebar::-webkit-scrollbar-thumb {
+  background-color: rgba(59, 59, 59, 0.2);
+  border-radius: 3px;
+}
+
+.app-header-separator{
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+    background-color: #ffffff;
+    height: 10px;
+    border: 1px #f1f1f4 solid;
+    border-bottom: 0;
+}
+
+.app-footer-separator {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+    background-color: #ffffff;
+    height: 10px;
+    border: 1px #f1f1f4 solid;
+    border-top: 0;
+}
+
+
+@media (min-width: 769px) {
+  #sidebar.collapsed .submenu.show {
+    display: none !important;  
+  }
+     .app-header-separator {
+      /*  margin-right: 80px;*/
+    }
+    .app-header-separator, .app-footer-separator {
+        transition: margin .3s 
+ease;
+        margin-left: 190px;
+    }
+    .app-header-separator.collapsed , .app-footer-separator.collapsed {
+  margin-left: 48px;
+}
+}
+
+/* TinyMCE overlay guards: prevent invisible layers blocking clicks */
+.tox-tinymce-aux { pointer-events: none; background: transparent !important; }
+.tox-notifications-container { pointer-events: none; }
+.tox-dialog, .tox-menu { pointer-events: auto; }
+.content-editor-wrap { position: relative; }
+
+/* Highlight Qlopy Media button in TinyMCE toolbar */
+.tox-toolbar button[aria-label="Media"] {
+  background: linear-gradient(90deg,#fffaf0,#fff2c2);
+  border: 1px solid #f5d07a;
+  box-shadow: 0 0 10px rgba(245,208,122,0.45);
+  color: #222;
+  padding: 6px 10px;
+  border-radius: 4px;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.tox-toolbar button[aria-label="Add media"]:hover{
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(245,208,122,0.55);
+}
+.tox-toolbar button[aria-label="Add media"] .tox-icon{ margin-right:8px; }
+.tox-toolbar button[aria-label="Add media"] .tox-button__text{ display:inline-block; font-weight:600; }
+
+
+/* Custom CSS to override Bootstrap's default behavior */
+body.modal-open {
+  padding-right: 0 !important;
+}
+
+/* If you have specific fixed elements (like a fixed header/navbar) */
+/* add their selectors here to remove the padding applied by Bootstrap's JS */
+.fixed-top,
+.fixed-bottom {
+  padding-right: 0 !important;
+}
+.site-copy{
+    font-style: italic;
+}
+.site-copy, .site-by {
+    font-size: 0.8rem;
+    flex: 1 0;
+    align-items: center;
+    height: 1rem;
+    padding: 2px;
+}
+.parent-flex {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: space-around;
+}
+.f-element {
+    display: flex;
+    flex: 1 1 0;
+    flex-grow: 1;
+    flex-basis: auto;
+}
+
+@font-face {
+  font-family: 'qp';
+  src: url('../font/qp.eot?66567397');
+  src: url('../font/qp.eot?66567397#iefix') format('embedded-opentype'),
+       url('../font/qp.woff2?66567397') format('woff2'),
+       url('../font/qp.woff?66567397') format('woff'),
+       url('../font/qp.ttf?66567397') format('truetype'),
+       url('../font/qp.svg?66567397#qp') format('svg');
+  font-weight: normal;
+  font-style: normal;
+}
+/* Chrome hack: SVG is rendered more smooth in Windozze. 100% magic, uncomment if you need it. */
+/* Note, that will break hinting! In other OS-es font will be not as sharp as it could be */
+/*
+@media screen and (-webkit-min-device-pixel-ratio:0) {
+  @font-face {
+    font-family: 'qp';
+    src: url('../font/qp.svg?66567397#qp') format('svg');
+  }
+}
+*/
+[class^="qp-"]:before, [class*=" qp-"]:before {
+  font-family: "qp";
+   font-style: normal;
+  font-weight: 400;
+  speak: never;
+  display: inline-block;
+  text-decoration: inherit;
+  text-align: center;
+  font-variant: normal;
+  text-transform: none;
+  line-height: 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.qp-key:before { content: '\e800'; } /* '' */
+.qp-key-inv:before { content: '\e801'; } /* '' */
+.qp-sun:before { content: '\e802'; } /* '' */
+.qp-sun-inv:before { content: '\e803'; } /* '' */
+.qp-moon-1:before { content: '\e804'; } /* '' */
+.qp-moon-inv:before { content: '\e805'; } /* '' */
+.qp-hash:before { content: '\e806'; } /* '' */
+.qp-at:before { content: '\e807'; } /* '' */
+.qp-popup:before { content: '\e808'; } /* '' */
+.qp-chat-alt:before { content: '\e809'; } /* '' */
+.qp-popup-1:before { content: '\e80a'; } /* '' */
+.qp-tools:before { content: '\e80b'; } /* '' */
+.qp-android:before { content: '\e80c'; } /* '' */
+.qp-not-found:before { content: '\e80d'; } /* '' */
+.qp-folder:before { content: '\e80e'; } /* '' */
+.qp-folder-open:before { content: '\e80f'; } /* '' */
+.qp-trash-empty:before { content: '\e810'; } /* '' */
+.qp-doc:before { content: '\e811'; } /* '' */
+.qp-sliders-1:before { content: '\e812'; } /* '' */
+.qp-volume-off:before { content: '\e813'; } /* '' */
+.qp-volume-down:before { content: '\e814'; } /* '' */
+.qp-volume-up:before { content: '\e815'; } /* '' */
+.qp-glasses:before { content: '\e816'; } /* '' */
+.qp-headphones:before { content: '\e817'; } /* '' */
+.qp-video-chat:before { content: '\e818'; } /* '' */
+.qp-search:before { content: '\e819'; } /* '' */
+.qp-search-1:before { content: '\e81a'; } /* '' */
+.qp-ok-circle:before { content: '\e81b'; } /* '' */
+.qp-cancel-circle:before { content: '\e81c'; } /* '' */
+.qp-tag:before { content: '\e81d'; } /* '' */
+.qp-tags:before { content: '\e81e'; } /* '' */
+.qp-eye:before { content: '\e81f'; } /* '' */
+.qp-eye-off:before { content: '\e820'; } /* '' */
+.qp-bookmark:before { content: '\e821'; } /* '' */
+.qp-off:before { content: '\e822'; } /* '' */
+.qp-heart-empty:before { content: '\e823'; } /* '' */
+.qp-heart:before { content: '\e824'; } /* '' */
+.qp-thumbs-up:before { content: '\e825'; } /* '' */
+.qp-thumbs-down:before { content: '\e826'; } /* '' */
+.qp-bell:before { content: '\e827'; } /* '' */
+.qp-chart-bar:before { content: '\e828'; } /* '' */
+.qp-cog-alt:before { content: '\e829'; } /* '' */
+.qp-cog:before { content: '\e82a'; } /* '' */
+.qp-edit:before { content: '\e82b'; } /* '' */
+.qp-light-up:before { content: '\e82c'; } /* '' */
+.qp-check:before { content: '\e82d'; } /* '' */
+.qp-barcode:before { content: '\e82e'; } /* '' */
+.qp-qrcode:before { content: '\e82f'; } /* '' */
+.qp-bookmark-1:before { content: '\e830'; } /* '' */
+.qp-star-o:before { content: '\e831'; } /* '' */
+.qp-whatsapp:before { content: '\e832'; } /* '' */
+.qp-bookmarks:before { content: '\e833'; } /* '' */
+.qp-globe:before { content: '\e834'; } /* '' */
+.qp-leaf:before { content: '\e835'; } /* '' */
+.qp-flight:before { content: '\e836'; } /* '' */
+.qp-contacts:before { content: '\e837'; } /* '' */
+.qp-attach:before { content: '\e838'; } /* '' */
+.qp-spin:before { content: '\e839'; } /* '' */
+.qp-newspaper-1:before { content: '\e83a'; } /* '' */
+.qp-chat-1:before { content: '\e83b'; } /* '' */
+.qp-docs-1:before { content: '\e83c'; } /* '' */
+.qp-keyboard:before { content: '\e83d'; } /* '' */
+.qp-wordpress:before { content: '\e83e'; } /* '' */
+.qp-stackoverflow:before { content: '\e83f'; } /* '' */
+.qp-github:before { content: '\e840'; } /* '' */
+.qp-gauge-1:before { content: '\e841'; } /* '' */
+.qp-print:before { content: '\e842'; } /* '' */
+.qp-users:before { content: '\e843'; } /* '' */
+.qp-users-1:before { content: '\e844'; } /* '' */
+.qp-users-outline:before { content: '\e845'; } /* '' */
+.qp-user-3:before { content: '\e846'; } /* '' */
+.qp-user:before { content: '\e847'; } /* '' */
+.qp-logout:before { content: '\e848'; } /* '' */
+.qp-cog-alt-1:before { content: '\e849'; } /* '' */
+.qp-youtube:before { content: '\e84a'; } /* '' */
+.qp-fb:before { content: '\e84b'; } /* '' */
+.qp-tweet-x:before { content: '\e84c'; } /* '' */
+.qp-instagram:before { content: '\e84d'; } /* '' */
+.qp-user-1:before { content: '\e84e'; } /* '' */
+.qp-user-outline:before { content: '\e84f'; } /* '' */
+.qp-logout-1:before { content: '\e850'; } /* '' */
+.qp-book:before { content: '\e851'; } /* '' */
+.qp-fire:before { content: '\e852'; } /* '' */
+.qp-chat-2:before { content: '\e853'; } /* '' */
+.qp-article-alt:before { content: '\e854'; } /* '' */
+.qp-qlopy:before { content: '\e88e'; } /* '' */
+.qp-apple:before { content: '\e892'; } /* '' */
+.qp-safari:before { content: '\e893'; } /* '' */
+.qp-photo-video-solid:before { content: '\e895'; } /* '' */
+.qp-qlopy-photo-video:before { content: '\e896'; } /* '' */
+.qp-color-brush:before { content: '\e897'; } /* '' */
+.qp-all-media:before { content: '\e898'; } /* '' */
+.qp-iit-menu-left:before { content: '\e8d8'; } /* '' */
+.qp-iit-menu-right:before { content: '\e8da'; } /* '' */
+.qp-exclamation:before { content: '\e900'; } /* '' */
+.qp-left-arrow:before { content: '\e902'; } /* '' */
+.qp-up-arrow:before { content: '\e903'; } /* '' */
+.qp-right-arrow:before { content: '\e904'; } /* '' */
+.qp-down-arrow:before { content: '\e905'; } /* '' */
+.qp-delete:before { content: '\e90a'; } /* '' */
+.qp-zoom:before { content: '\e90b'; } /* '' */
+.qp-star:before { content: '\e90e'; } /* '' */
+.qp-plus:before { content: '\e910'; } /* '' */
+.qp-transfer:before { content: '\e911'; } /* '' */
+.qp-minus:before { content: '\e912'; } /* '' */
+.qp-downloads:before { content: '\e914'; } /* '' */
+.qp-compare:before { content: '\e915'; } /* '' */
+
+/* QPMeta filesortable preview badges and captions */
+.qpmeta-file-preview-item { position: relative; display: inline-block; margin-right: 8px; }
+.qpmeta-file-preview-item img { display: block; }
+.qpmeta-file-index { position: absolute; top: 4px; left: 4px; background: #000; color: #fff; padding: 2px 6px; border-radius: 3px; opacity: 0.85; font-size: 12px; z-index: 2; }
+.qpmeta-file-name { text-align: center; font-size: 12px; margin-top: 4px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.qp-loader-gif:before { content: '\e917'; } /* '' */
+.qp-tick:before { content: '\e918'; } /* '' */
+.qp-clear-filter:before { content: '\e91f'; } /* '' */
+.qp-checked:before { content: '\e92a'; } /* '' */
+.qp-circle:before { content: '\e92b'; } /* '' */
+.qp-grid-list:before { content: '\e92e'; } /* '' */
+.qp-list-grid:before { content: '\e92f'; } /* '' */
+.qp-protect:before { content: '\e930'; } /* '' */
+.qp-share:before { content: '\e932'; } /* '' */
+.qp-controls:before { content: '\e934'; } /* '' */
+.qp-chat:before { content: '\e938'; } /* '' */
+.qp-internet:before { content: '\e939'; } /* '' */
+.qp-sent:before { content: '\e942'; } /* '' */
+.qp-more:before { content: '\e943'; } /* '' */
+.qp-gift:before { content: '\e946'; } /* '' */
+.qp-left-arrow-2:before { content: '\e947'; } /* '' */
+.qp-right-arrow-2:before { content: '\e948'; } /* '' */
+.qp-time:before { content: '\e949'; } /* '' */
+.qp-gallery:before { content: '\e952'; } /* '' */
+.qp-home:before { content: '\e953'; } /* '' */
+.qp-emoji-happy:before { content: '\e955'; } /* '' */
+.qp-emoji-sad:before { content: '\e956'; } /* '' */
+.qp-emoji-neutral:before { content: '\e957'; } /* '' */
+.qp-filter:before { content: '\e95d'; } /* '' */
+.qp-conversation:before { content: '\e95f'; } /* '' */
+.qp-dev-menu:before { content: '\e961'; } /* '' */
+.qp-home-o:before { content: '\e964'; } /* '' */
+.qp-user-2:before { content: '\e96b'; } /* '' */
+.qp-download-cloud:before { content: '\f015'; } /* '' */
+.qp-login:before { content: '\f02c'; } /* '' */
+.qp-check-empty:before { content: '\f096'; } /* '' */
+.qp-bookmark-empty:before { content: '\f097'; } /* '' */
+.qp-github-circled:before { content: '\f09b'; } /* '' */
+.qp-certificate:before { content: '\f0a3'; } /* '' */
+.qp-docs:before { content: '\f0c5'; } /* '' */
+.qp-gauge:before { content: '\f0e4'; } /* '' */
+.qp-sitemap:before { content: '\f0e8'; } /* '' */
+.qp-doc-text:before { content: '\f0f6'; } /* '' */
+.qp-circle-empty:before { content: '\f10c'; } /* '' */
+.qp-spinner:before { content: '\f110'; } /* '' */
+.qp-circle-1:before { content: '\f111'; } /* '' */
+.qp-folder-empty:before { content: '\f114'; } /* '' */
+.qp-folder-open-empty:before { content: '\f115'; } /* '' */
+.qp-mic:before { content: '\f130'; } /* '' */
+.qp-mute:before { content: '\f131'; } /* '' */
+.qp-html5:before { content: '\f13b'; } /* '' */
+.qp-doc-inv:before { content: '\f15b'; } /* '' */
+.qp-doc-text-inv:before { content: '\f15c'; } /* '' */
+.qp-sort-name-up:before { content: '\f15d'; } /* '' */
+.qp-sort-name-down:before { content: '\f15e'; } /* '' */
+.qp-sort-alt-up:before { content: '\f160'; } /* '' */
+.qp-sort-alt-down:before { content: '\f161'; } /* '' */
+.qp-sort-number-up:before { content: '\f162'; } /* '' */
+.qp-sort-number-down:before { content: '\f163'; } /* '' */
+.qp-windows:before { content: '\f17a'; } /* '' */
+.qp-linux:before { content: '\f17c'; } /* '' */
+.qp-moon:before { content: '\f186'; } /* '' */
+.qp-database:before { content: '\f1c0'; } /* '' */
+.qp-file-pdf:before { content: '\f1c1'; } /* '' */
+.qp-file-word:before { content: '\f1c2'; } /* '' */
+.qp-file-excel:before { content: '\f1c3'; } /* '' */
+.qp-file-powerpoint:before { content: '\f1c4'; } /* '' */
+.qp-file-image:before { content: '\f1c5'; } /* '' */
+.qp-file-archive:before { content: '\f1c6'; } /* '' */
+.qp-file-audio:before { content: '\f1c7'; } /* '' */
+.qp-file-video:before { content: '\f1c8'; } /* '' */
+.qp-file-code:before { content: '\f1c9'; } /* '' */
+.qp-lifebuoy:before { content: '\f1cd'; } /* '' */
+.qp-sliders:before { content: '\f1de'; } /* '' */
+.qp-plug:before { content: '\f1e6'; } /* '' */
+.qp-newspaper:before { content: '\f1ea'; } /* '' */
+.qp-bell-off-empty:before { content: '\f1f7'; } /* '' */
+.qp-trash:before { content: '\f1f8'; } /* '' */
+.qp-chart-area:before { content: '\f1fe'; } /* '' */
+.qp-chart-pie:before { content: '\f200'; } /* '' */
+.qp-toggle-off:before { content: '\f204'; } /* '' */
+.qp-toggle-on:before { content: '\f205'; } /* '' */
+.qp-diamond:before { content: '\f219'; } /* '' */
+.qp-clone:before { content: '\f24d'; } /* '' */
+.qp-chrome:before { content: '\f268'; } /* '' */
+.qp-firefox:before { content: '\f269'; } /* '' */
+.qp-envelope-open:before { content: '\f2b6'; } /* '' */
+.qp-envelope-open-o:before { content: '\f2b7'; } /* '' */
+.qp-user-o:before { content: '\f2c0'; } /* '' */
+
+
+.animate-spin {
+  -moz-animation: spin 2s infinite linear;
+  -o-animation: spin 2s infinite linear;
+  -webkit-animation: spin 2s infinite linear;
+  animation: spin 2s infinite linear;
+  display: inline-block;
+}
+
+/* QPMeta panel styles */
+.qpmeta-panel { border-radius:4px; overflow:hidden; }
+.qpmeta-panel-header { background:#f5f5f5; border-bottom:1px solid #e1e1e1; }
+.qpmeta-panel-header .qpmeta-panel-title { font-weight:600; color:#222; }
+.qpmeta-panel-handle { font-size:16px; color:#666; display:inline-block; width:22px; text-align:center; }
+.qpmeta-panel-toggle { margin-left:8px; }
+.qpmeta-panel-body { background:#fff; }
+
+@-moz-keyframes spin {
+  0% {
+    -moz-transform: rotate(0);
+    -o-transform: rotate(0);
+    -webkit-transform: rotate(0);
+    transform: rotate(0);
+  }
+
+  100% {
+    -moz-transform: rotate(359deg);
+    -o-transform: rotate(359deg);
+    -webkit-transform: rotate(359deg);
+    transform: rotate(359deg);
+  }
+}
+
+@-webkit-keyframes spin {
+  0% {
+    -moz-transform: rotate(0);
+    -o-transform: rotate(0);
+    -webkit-transform: rotate(0);
+    transform: rotate(0);
+  }
+
+  100% {
+    -moz-transform: rotate(359deg);
+    -o-transform: rotate(359deg);
+    -webkit-transform: rotate(359deg);
+    transform: rotate(359deg);
+  }
+}
+
+@-o-keyframes spin {
+  0% {
+    -moz-transform: rotate(0);
+    -o-transform: rotate(0);
+    -webkit-transform: rotate(0);
+    transform: rotate(0);
+  }
+
+  100% {
+    -moz-transform: rotate(359deg);
+    -o-transform: rotate(359deg);
+    -webkit-transform: rotate(359deg);
+    transform: rotate(359deg);
+  }
+}
+
+@-ms-keyframes spin {
+  0% {
+    -moz-transform: rotate(0);
+    -o-transform: rotate(0);
+    -webkit-transform: rotate(0);
+    transform: rotate(0);
+  }
+
+  100% {
+    -moz-transform: rotate(359deg);
+    -o-transform: rotate(359deg);
+    -webkit-transform: rotate(359deg);
+    transform: rotate(359deg);
+  }
+}
+
+@keyframes spin {
+  0% {
+    -moz-transform: rotate(0);
+    -o-transform: rotate(0);
+    -webkit-transform: rotate(0);
+    transform: rotate(0);
+  }
+
+  100% {
+    -moz-transform: rotate(359deg);
+    -o-transform: rotate(359deg);
+    -webkit-transform: rotate(359deg);
+    transform: rotate(359deg);
+  }
+}
