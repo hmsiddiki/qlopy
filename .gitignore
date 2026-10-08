@@ -27,6 +27,12 @@
 !/content/themes/default/
 !/content/themes/default/**
 
+# 6. Whitelist root/content/plugins/example-plugin
+!/content/plugins/
+/content/plugins/*
+!/content/plugins/example-plugin/
+!/content/plugins/example-plugin/**
+
 # 6. Whitelist root/uploads/default-avatar.png
 !/uploads/
 /uploads/*
