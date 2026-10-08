@@ -1,0 +1,3 @@
+# Treat TinyMCE and other vendor assets as third-party (hides from language bar)
+admin/assets/js/tinymce/** linguist-vendored
+admin/assets/bt_4.6.2/** linguist-vendored
