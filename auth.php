@@ -310,35 +310,159 @@ function qp_hash_token_sig($token_id, $user_id, $expires) {
     return hash_hmac('sha256', $token_id . '|' . $user_id . '|' . $expires, $salt);
 }
 
-// Simple stateless nonce helpers (HMAC + expiry)
+/**
+ * Browser CSRF nonces are bound to the current session, or to a per-browser
+ * anonymous seed before login. Version 1 nonces remain verifiable until their
+ * embedded expiry so pages rendered immediately before an upgrade still work.
+ */
+function qp_nonce_security_salt(): string {
+    $cfg = function_exists('get_config')
+        ? get_config()
+        : (is_file(__DIR__ . '/config.php') ? require __DIR__ . '/config.php' : []);
+    return (string)($cfg['security_salt'] ?? '');
+}
+
+function qp_nonce_base64url_encode(string $value): string {
+    return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+}
+
+function qp_nonce_base64url_decode(string $value) {
+    if ($value === '' || preg_match('/^[A-Za-z0-9_-]+$/', $value) !== 1) return false;
+    $padding = strlen($value) % 4;
+    if ($padding) $value .= str_repeat('=', 4 - $padding);
+    return base64_decode(strtr($value, '-_', '+/'), true);
+}
+
+function qp_nonce_anonymous_binding(int $expires): ?string {
+    $cookie_name = 'qp_csrf_seed';
+    $seed = $_COOKIE[$cookie_name] ?? '';
+    if (!is_string($seed) || preg_match('/^[a-f0-9]{64}$/', $seed) !== 1) {
+        if (headers_sent()) {
+            error_log('Unable to create Qlopy CSRF nonce after response headers were sent.');
+            return null;
+        }
+        try {
+            $seed = bin2hex(random_bytes(32));
+        } catch (Exception $e) {
+            error_log('Unable to generate Qlopy anonymous CSRF seed: ' . $e->getMessage());
+            return null;
+        }
+
+        $cfg = function_exists('get_config')
+            ? get_config()
+            : (is_file(__DIR__ . '/config.php') ? require __DIR__ . '/config.php' : []);
+        $site_url = $cfg['site_url'] ?? null;
+        $cookie_path = '/';
+        $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || (string)($_SERVER['SERVER_PORT'] ?? '') === '443';
+        if ($site_url) {
+            $parsed = parse_url($site_url);
+            if (!empty($parsed['path'])) $cookie_path = rtrim($parsed['path'], '/') ?: '/';
+            if (!empty($parsed['scheme']) && strtolower($parsed['scheme']) === 'https') $secure = true;
+        }
+        setcookie($cookie_name, $seed, $expires, $cookie_path, '', $secure, true);
+        $_COOKIE[$cookie_name] = $seed;
+    }
+    return hash_hmac('sha256', 'anonymous|' . $seed, qp_nonce_security_salt());
+}
+
+function qp_nonce_request_context(int $expires): ?array {
+    $cookie = $_COOKIE[QP_SESSION_COOKIE] ?? '';
+    $session = $cookie ? validate_session_token($cookie) : null;
+    if ($session) {
+        return [
+            'kind' => 'session',
+            'user_id' => (int)$session['user_id'],
+            'binding' => hash_hmac('sha256', 'session|' . $session['token_id'], qp_nonce_security_salt()),
+        ];
+    }
+
+    $binding = qp_nonce_anonymous_binding($expires);
+    if ($binding === null) return null;
+    return ['kind' => 'anonymous', 'user_id' => 0, 'binding' => $binding];
+}
+
+// Version 2 nonces provide CSRF protection while preserving the original public API.
 if (!function_exists('qp_create_nonce')) {
-    function qp_create_nonce(string $action = '-1', int $ttl = 300): string {
-        $cfg = (function_exists('get_config') ? get_config() : (is_file(__DIR__ . '/config.php') ? require __DIR__ . '/config.php' : []));
-        $salt = $cfg['security_salt'] ?? '';
+    function qp_create_nonce(string $action = '-1', int $ttl = 7200): string {
+        if ($action === '' || $ttl <= 0) return '';
+
         $expires = time() + $ttl;
-        $h = hash_hmac('sha256', $action . '|' . $expires, $salt);
-        $raw = $expires . '|' . $h;
-        return rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
+        $context = qp_nonce_request_context($expires);
+        if ($context === null) return '';
+
+        $payload = json_encode([
+            'v' => 2,
+            'e' => $expires,
+            'a' => $action,
+            'k' => $context['kind'],
+            'u' => $context['user_id'],
+            'b' => $context['binding'],
+        ]);
+        if ($payload === false) {
+            error_log('Unable to encode Qlopy CSRF nonce payload.');
+            return '';
+        }
+
+        $encoded_payload = qp_nonce_base64url_encode($payload);
+        $signature = hash_hmac('sha256', 'qp_nonce_v2|' . $encoded_payload, qp_nonce_security_salt(), true);
+        return 'qp2.' . $encoded_payload . '.' . qp_nonce_base64url_encode($signature);
     }
 }
 
 if (!function_exists('qp_verify_nonce')) {
     function qp_verify_nonce(string $nonce, string $action = '-1'): bool {
-        if (!$nonce) return false;
-        $cfg = (function_exists('get_config') ? get_config() : (is_file(__DIR__ . '/config.php') ? require __DIR__ . '/config.php' : []));
-        $salt = $cfg['security_salt'] ?? '';
-        // base64 urlsafe decode
-        $pad = strlen($nonce) % 4; if ($pad) $nonce .= str_repeat('=', 4 - $pad);
-        $raw = base64_decode(strtr($nonce, '-_', '+/'));
+        if ($nonce === '' || $action === '' || strlen($nonce) > 8192) return false;
+
+        if (strncmp($nonce, 'qp2.', 4) === 0) {
+            $parts = explode('.', $nonce);
+            if (count($parts) !== 3 || $parts[0] !== 'qp2') return false;
+
+            $payload_json = qp_nonce_base64url_decode($parts[1]);
+            $signature = qp_nonce_base64url_decode($parts[2]);
+            if ($payload_json === false || $signature === false || strlen($payload_json) > 4096) return false;
+
+            $expected = hash_hmac('sha256', 'qp_nonce_v2|' . $parts[1], qp_nonce_security_salt(), true);
+            if (!hash_equals($expected, $signature)) return false;
+
+            $payload = json_decode($payload_json, true);
+            if (!is_array($payload)
+                || ($payload['v'] ?? null) !== 2
+                || !isset($payload['e'], $payload['a'], $payload['k'], $payload['u'], $payload['b'])
+                || !is_int($payload['e'])
+                || !is_string($payload['a'])
+                || !is_string($payload['k'])
+                || !is_int($payload['u'])
+                || !is_string($payload['b'])
+                || $payload['e'] < time()
+                || !hash_equals($action, $payload['a'])) {
+                return false;
+            }
+
+            $context = qp_nonce_request_context($payload['e']);
+            return $context !== null
+                && hash_equals($context['kind'], $payload['k'])
+                && $context['user_id'] === $payload['u']
+                && hash_equals($context['binding'], $payload['b']);
+        }
+
+        // Legacy v1 support: accept only tokens generated before the upgrade
+        // until their original expiry. New tokens are always generated as v2.
+        $raw = qp_nonce_base64url_decode($nonce);
         if ($raw === false) return false;
-        $parts = explode('|', $raw, 2);
-        if (count($parts) !== 2) return false;
+        $parts = explode('|', $raw);
+        if (count($parts) !== 2 || !ctype_digit($parts[0]) || !ctype_xdigit($parts[1]) || strlen($parts[1]) !== 64) return false;
         $expires = (int)$parts[0];
-        $h = $parts[1] ?? '';
-        if ($expires < time()) return false; // expired
-        $expected = hash_hmac('sha256', $action . '|' . $expires, $salt);
-        return hash_equals($expected, $h);
+        if ($expires < time()) return false;
+        $expected = hash_hmac('sha256', $action . '|' . $expires, qp_nonce_security_salt());
+        return hash_equals($expected, $parts[1]);
     }
+}
+
+// Seed anonymous browser requests before templates emit output, so public forms
+// can use the same CSRF API as authenticated forms.
+if (empty($_COOKIE[QP_SESSION_COOKIE]) && !headers_sent()) {
+    qp_nonce_anonymous_binding(time() + 7200);
 }
 
 function qp_cache_backend() {
@@ -6375,4 +6499,126 @@ function qp_remote_request(string $method, string $url, array $args = []): array
 
 function qp_remote_post(string $url, array $args = []): array {
     return qp_remote_request('POST', $url, $args);
+}
+
+/**
+ * Frontend CSRF nonce refresh API
+ *
+ * This opt-in feature lets long-running authenticated frontend forms replace a
+ * nearing-expiry session-bound nonce without reloading the page. It does not
+ * grant permission to perform the underlying action: each AJAX/form handler
+ * must still enforce its own capability and resource-ownership checks.
+ *
+ * Register only actions that are safe to mint for the active user session:
+ *
+ *     qp_register_nonce_refresh_action('add_post', 7200);
+ *     qp_register_nonce_refresh_action('profile_update', 3600);
+ *     qp_register_nonce_refresh_action('change_password', 900);
+ *
+ * The browser then sends an authenticated same-origin POST request to:
+ *
+ *     /ajax.php?action=qp_refresh_nonce
+ *
+ * with these form values/headers:
+ *
+ *     nonce_action=add_post
+ *     X-QP-Nonce-Refresh: 1
+ *
+ * A matching form can use the optional qp-nonce-refresh.js helper:
+ *
+ *     <form data-qp-nonce-action="add_post" data-qp-nonce-ttl="7200">
+ *       <input type="hidden" name="nonce" data-qp-nonce
+ *              value="<?= htmlspecialchars(qp_create_nonce('add_post'), ENT_QUOTES) ?>">
+ *     </form>
+ *
+ * The endpoint accepts only registered actions and uses the server-registered
+ * TTL; clients cannot choose either value. It also requires a valid Qlopy
+ * login session, POST, the explicit refresh header, and a same-origin Origin.
+ */
+function qp_register_nonce_refresh_action(string $action, int $ttl = 7200): bool {
+    if (preg_match('/^[A-Za-z0-9:_-]{1,128}$/', $action) !== 1 || $ttl <= 0) {
+        return false;
+    }
+    if (!isset($GLOBALS['qp_nonce_refresh_actions']) || !is_array($GLOBALS['qp_nonce_refresh_actions'])) {
+        $GLOBALS['qp_nonce_refresh_actions'] = [];
+    }
+    $GLOBALS['qp_nonce_refresh_actions'][$action] = $ttl;
+    return true;
+}
+
+function qp_nonce_refresh_is_same_origin_request(): bool {
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    if (!is_string($origin) || $origin === '') return false;
+
+    $cfg = function_exists('get_config')
+        ? get_config()
+        : (is_file(__DIR__ . '/config.php') ? require __DIR__ . '/config.php' : []);
+    $site_url = $cfg['site_url'] ?? '';
+    $expected = is_string($site_url) ? parse_url($site_url) : false;
+    $actual = parse_url($origin);
+    if ($expected === false || $actual === false
+        || empty($expected['scheme']) || empty($expected['host'])
+        || empty($actual['scheme']) || empty($actual['host'])) {
+        return false;
+    }
+
+    $expected_scheme = strtolower($expected['scheme']);
+    $actual_scheme = strtolower($actual['scheme']);
+    $expected_host = strtolower($expected['host']);
+    $actual_host = strtolower($actual['host']);
+    $expected_port = (int)($expected['port'] ?? ($expected_scheme === 'https' ? 443 : 80));
+    $actual_port = (int)($actual['port'] ?? ($actual_scheme === 'https' ? 443 : 80));
+    if ($expected_scheme !== $actual_scheme || $expected_host !== $actual_host || $expected_port !== $actual_port) {
+        return false;
+    }
+
+    $fetch_site = $_SERVER['HTTP_SEC_FETCH_SITE'] ?? '';
+    return $fetch_site === '' || $fetch_site === 'same-origin';
+}
+
+function qp_handle_nonce_refresh_request(array $request): void {
+    header('Cache-Control: no-store, private');
+    header('Pragma: no-cache');
+
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST'
+        || ($_SERVER['HTTP_X_QP_NONCE_REFRESH'] ?? '') !== '1'
+        || !qp_nonce_refresh_is_same_origin_request()) {
+        http_response_code(403);
+        echo json_encode(['status' => 'error', 'message' => 'Invalid nonce refresh request.']);
+        return;
+    }
+    if (!is_logged_in()) {
+        http_response_code(401);
+        echo json_encode(['status' => 'error', 'message' => 'Authentication required.']);
+        return;
+    }
+
+    $action = $request['nonce_action'] ?? '';
+    $allowed_actions = $GLOBALS['qp_nonce_refresh_actions'] ?? [];
+    if (!is_string($action) || !is_array($allowed_actions) || !isset($allowed_actions[$action])) {
+        http_response_code(403);
+        echo json_encode(['status' => 'error', 'message' => 'Nonce action is not refreshable.']);
+        return;
+    }
+
+    $ttl = (int)$allowed_actions[$action];
+    $nonce = qp_create_nonce($action, $ttl);
+    if ($nonce === '') {
+        http_response_code(500);
+        error_log('Unable to issue a Qlopy CSRF nonce refresh token.');
+        echo json_encode(['status' => 'error', 'message' => 'Unable to refresh nonce.']);
+        return;
+    }
+
+    echo json_encode([
+        'status' => 'success',
+        'nonce' => $nonce,
+        'expires_at' => time() + $ttl,
+    ]);
+}
+
+function qp_register_nonce_refresh_ajax_handler(): void {
+    if (function_exists('add_action')) {
+        add_action('iitcm_ajax_qp_refresh_nonce', 'qp_handle_nonce_refresh_request');
+    }
 }

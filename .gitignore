@@ -3,6 +3,7 @@
 
 # 2. Whitelist gitignore itself
 !.gitignore
+!.gitattributes
 
 # 3. Core root directories & all nested contents
 !/admin/

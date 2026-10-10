@@ -9,6 +9,10 @@ require_once __DIR__ . '/includes/ajax-hooks.php';
 require_once __DIR__ . '/includes/qpmeta.php';
 require_once __DIR__ . '/includes/query.php';
 require_once __DIR__ . '/includes/post-types.php';
+
+if (function_exists('qp_register_nonce_refresh_ajax_handler')) {
+    qp_register_nonce_refresh_ajax_handler();
+}
  
 
 try {

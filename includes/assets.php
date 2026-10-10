@@ -26,6 +26,21 @@ function enqueue_style($handle, $src, $deps = [], $ver = '', $media = 'all', $at
 function qp_append_footer_inline(string $script): void {
     if (!isset($GLOBALS['qp_footer_inline']) || !is_array($GLOBALS['qp_footer_inline'])) $GLOBALS['qp_footer_inline'] = [];
     $GLOBALS['qp_footer_inline'][] = $script;
+
+    if (
+        empty($GLOBALS['qp_footer_inline_hook_registered']) &&
+        function_exists('add_action')
+    ) {
+        $GLOBALS['qp_footer_inline_hook_registered'] = true;
+        add_action('qp_after_footer', static function (): void {
+            $scripts = $GLOBALS['qp_footer_inline'] ?? [];
+            if (!is_array($scripts) || empty($scripts)) {
+                return;
+            }
+
+            echo "\n" . implode("\n", $scripts) . "\n";
+        });
+    }
 }
 
 /**
@@ -114,6 +129,10 @@ function qp_render_localized_scripts(string $html, array $handles): string {
 
 /**
  * Print the HTML tags for enqueued styles in the header
+ *
+ * @param string $type The type of assets ('styles' or 'scripts').
+ * @param array $handles The list of asset handles to include in the cache key.
+ * @return string The generated cache key.
  */
 function qp_assets_cache_key($type, $handles) {
     global $qlopy_assets;
@@ -126,12 +145,18 @@ function qp_assets_cache_key($type, $handles) {
     foreach ($handles as $h) {
         if (isset($qlopy_assets['styles'][$h])) {
             $a = $qlopy_assets['styles'][$h];
-            $meta[$h] = isset($a['ver']) ? $a['ver'] : '';
+            $meta[$h] = [
+                'src' => $a['src'] ?? '',
+                'ver' => $a['ver'] ?? '',
+            ];
         } elseif (isset($qlopy_assets['scripts'][$h])) {
             $a = $qlopy_assets['scripts'][$h];
-            $meta[$h] = isset($a['ver']) ? $a['ver'] : '';
+            $meta[$h] = [
+                'src' => $a['src'] ?? '',
+                'ver' => $a['ver'] ?? '',
+            ];
         } else {
-            $meta[$h] = '';
+            $meta[$h] = null;
         }
     }
     return 'qp_assets_' . $type . '_' . md5(json_encode($meta));
@@ -218,15 +243,12 @@ function print_styles() {
     $cached = function_exists('qp_cache_fetch') ? qp_cache_fetch($cacheKey) : false;
     if ($cached) {
         // Append any dynamic footer extras even when cached
-        $extra_footer = '';
+        $extra_header_style = '';
         if (function_exists('apply_filters')) {
-            $extra_footer = (string)apply_filters('assets_footer_scripts_extra', '');
+            $extra_header_style = (string)apply_filters('assets_header_style_extra', '');
         }
-        if (!empty($GLOBALS['qp_footer_inline']) && is_array($GLOBALS['qp_footer_inline'])) {
-            $extra_footer .= "\n" . implode("\n", $GLOBALS['qp_footer_inline']);
-        }
-        if (trim($extra_footer) !== '') {
-            echo $cached . "\n" . $extra_footer . "\n";
+        if (trim($extra_header_style) !== '') {
+            echo $cached . "\n" . $extra_header_style . "\n";
         } else {
             echo $cached;
         }
@@ -293,10 +315,17 @@ function print_header_scripts() {
     $handles = array_values(array_filter($handles, function($h) use ($qlopy_assets) { return !empty($qlopy_assets['scripts'][$h]) && !$qlopy_assets['scripts'][$h]['in_footer']; }));
     $cacheKey = qp_assets_cache_key('scripts', $handles);
     $cached = function_exists('qp_cache_fetch') ? qp_cache_fetch($cacheKey) : false;
-if ($cached !== false) {
-    echo qp_render_localized_scripts($cached, $handles);
-    return;
-}
+    if ($cached !== false) {
+        $extra_header_script = '';
+        if (function_exists('apply_filters')) {
+            $extra_header_script = (string) apply_filters('assets_header_scripts_extra', '');
+        }
+        echo qp_render_localized_scripts($cached, $handles);
+        if (trim($extra_header_script) !== '') {
+            echo "\n" . $extra_header_script . "\n";
+        }
+        return;
+    }
 
     $out = "";
     foreach ($handles as $hh) {
@@ -405,10 +434,6 @@ if ($cached !== false) {
     if (function_exists('apply_filters')) {
         $extra_footer = (string) apply_filters('assets_footer_scripts_extra', '');
     }
-    if (!empty($GLOBALS['qp_footer_inline']) && is_array($GLOBALS['qp_footer_inline'])) {
-        $extra_footer .= "\n" . implode("\n", $GLOBALS['qp_footer_inline']);
-    }
-
     echo qp_render_localized_scripts($out, $handles);
 
     if (trim($extra_footer) !== '') {
