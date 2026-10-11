@@ -7,7 +7,7 @@ if (!defined('QLOPY_INIT')) { http_response_code(403); exit; }
 
 // Core/version information (bump with releases)
 if (!defined('QLOPY_VERSION')) {
-    define('QLOPY_VERSION', '1.3.0');
+    define('QLOPY_VERSION', '1.3.1');
 }
 
 if (!defined('QLOPY_CORE_UPDATE_URL')) {
