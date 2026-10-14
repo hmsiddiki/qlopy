@@ -4514,6 +4514,27 @@ if (!function_exists('qp_get_post_id_by_slug')) {
     }
 }
 
+///helper get details by post ID
+if (!function_exists('qp_get_post_details_by_post_id')) {
+    function qp_get_post_details_by_post_id(int $post_id): ?array {
+        $post_id = intval($post_id);
+        if ($post_id <= 0) return null;
+        if (!function_exists('db') || !function_exists('table_name')) return null;
+
+        $pdo = db();
+        $sql = 'SELECT * FROM ' . table_name('posts') . ' WHERE id = ? LIMIT 1';
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$post_id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $row ? $row : null;
+        } catch (Exception $ex) {
+            return null;
+        }
+    }
+
+}
+
 ///helper get slug by post ID
 if (!function_exists('qp_get_slug_by_post_id')) {
     function qp_get_slug_by_post_id(int $post_id): ?string {
@@ -4528,6 +4549,27 @@ if (!function_exists('qp_get_slug_by_post_id')) {
             $stmt->execute([$post_id]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
             return $row ? $row['slug'] : null;
+        } catch (Exception $ex) {
+            return null;
+        }
+    }
+
+}
+
+///helper get post type by post ID
+if (!function_exists('qp_get_post_type_by_post_id')) {
+    function qp_get_post_type_by_post_id(int $post_id): ?string {
+        $post_id = intval($post_id);
+        if ($post_id <= 0) return null;
+        if (!function_exists('db') || !function_exists('table_name')) return null;
+
+        $pdo = db();
+        $sql = 'SELECT post_type FROM ' . table_name('posts') . ' WHERE id = ? LIMIT 1';
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$post_id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            return $row ? $row['post_type'] : null;
         } catch (Exception $ex) {
             return null;
         }
@@ -4651,12 +4693,19 @@ if (!function_exists('is_page')) {
     }
 }
 
-function get_the_permalink($post_type, $slug) {
+function get_the_permalink($post_type=null, $slug=null) {
+    if(empty($post_type) && empty($slug)) return null;
 
-if(!is_string($slug) && $slug !== '' && is_numeric($slug)) {
+
+if(!is_string($post_type) && !empty($post_type) && is_numeric($post_type) && empty($slug)) {
+    $post_details = qp_get_post_details_by_post_id($post_type);
+    $post_type = $post_details['post_type'] ?? null;
+    $slug = $post_details['slug'] ?? null; // Corrected to use $post_type as the argument for qp_get_slug_by_post_id
+}
+if(!is_string($slug) && !empty($slug) && is_numeric($slug) && is_string($post_type) && !empty($post_type)) {
     $slug = qp_get_slug_by_post_id($slug);
 }
-            
+         // qp_get_post_type_by_post_id  
  // Build a permalink template for this post type where "%slug%" will be substituted client-side.
             // Use permalink_for_page for the `page` post type so root-page patterns ('/%slug%') render without a '/page/' prefix.
             if ($post_type === 'page' && function_exists('permalink_for_page')) {
