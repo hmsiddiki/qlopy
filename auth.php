@@ -6671,3 +6671,30 @@ function qp_register_nonce_refresh_ajax_handler(): void {
         add_action('iitcm_ajax_qp_refresh_nonce', 'qp_handle_nonce_refresh_request');
     }
 }
+
+/**
+ * Permanently delete a user and everything stored in its user meta (which includes its login sessions).
+ * Both deletes run in one transaction. Returns true when the user row is gone, false on a bad id, a missing
+ * user or a database error. This does not check permissions; the caller must.
+ */
+function qp_delete_user(int $user_id): bool {
+    global $pdo;
+    if ($user_id <= 0 || !($pdo instanceof PDO)) return false;
+    $started = false;
+    try {
+        if (!$pdo->inTransaction()) {
+            $pdo->beginTransaction();
+            $started = true;
+        }
+        $pdo->prepare('DELETE FROM ' . table_name('user_meta') . ' WHERE user_id = ?')->execute([$user_id]);
+        $stmt = $pdo->prepare('DELETE FROM ' . table_name('users') . ' WHERE id = ?');
+        $stmt->execute([$user_id]);
+        $deleted = $stmt->rowCount() > 0;
+        if ($started) $pdo->commit();
+        return $deleted;
+    } catch (Throwable $e) {
+        if ($started && $pdo->inTransaction()) $pdo->rollBack();
+        error_log('qp_delete_user failed: ' . $e->getMessage());
+        return false;
+    }
+}

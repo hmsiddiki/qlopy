@@ -3,6 +3,9 @@ if (!defined('QLOPY_INIT')) { http_response_code(403); exit; }
 // qpmeta metabox registry
 $GLOBALS['qpmeta_metaboxes'] = [];
 
+// Field type `repeatable_row` (table of typed rows stored as one value); see the file header.
+require_once __DIR__ . '/qpmeta-rows.php';
+
 /**
  * Register a metabox.
  * 
@@ -589,7 +592,7 @@ function qpmeta_render_field($field, $object_type, $object_id = null) {
             $field['object_id'] = $object_id;
         }
         // If multilingual enabled, render base control plus per-lang controls
-        if ($is_lang_enabled && !in_array($type, ['file','filesortable','tags'])) {
+        if ($is_lang_enabled && !in_array($type, ['file','filesortable','tags','repeatable_row'])) {
             // Base (default) field
             qpmeta_field_control($type, $id, $value, $field);
             // Render per-language inputs
@@ -835,6 +838,9 @@ function qpmeta_field_control($type, $name, $value, $field) {
             }
             echo "</div>";
             break;
+        case 'repeatable_row':
+            qpmeta_rows_control((string)$name, $value, $field);
+            break;
         case 'richtext':
             // Admin-only rich text editor field; initialized by editor-init.js (TinyMCE)
             echo "<textarea name='" . htmlspecialchars($name) . "' class='form-control qpmeta-richtext' rows='8'>" . htmlspecialchars($value) . "</textarea>";
@@ -940,6 +946,26 @@ function qpmeta_save_metaboxes($object_type, $object_id, $post_data, $files_data
             }
 
             // Normal save flow (no per-field debug logging)
+
+            if ($type === 'repeatable_row') {
+                try {
+                    $val = qpmeta_rows_normalize($val, $field);
+                } catch (InvalidArgumentException $e) {
+                    $validation_errors[] = $e->getMessage();
+                    continue;
+                }
+            }
+
+            // Plugins may normalise or refuse a value before it is stored: return the value to store, or
+            // throw InvalidArgumentException to keep the stored value and report the message.
+            if (function_exists('apply_filters')) {
+                try {
+                    $val = apply_filters('qpmeta_sanitize_field', $val, $field, $object_type, $object_id, $post_data);
+                } catch (InvalidArgumentException $e) {
+                    $validation_errors[] = $field['name'] . ': ' . $e->getMessage();
+                    continue;
+                }
+            }
 
             if (!empty($field['validate']['required'])) {
                 if ($repeatable) {
@@ -1497,7 +1523,7 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_add_
     }
 
     // Validate required fields depending on supports
-    if (!$post_type || ($supports_has('title') && $title === '') || ($supports_has('slug') && $slug === '') || ($supports_has('editor') && $content === '') || $status === '') {
+    if (!$post_type || ($supports_has('title') && $title === '') || ($supports_has('slug') && $slug === '') || $status === '') {
         echo json_encode(['status' => 'error', 'message' => 'Missing required post data']);
         exit;
     }

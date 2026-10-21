@@ -366,6 +366,8 @@ if (function_exists('enqueue_admin_script')) {
     // Ensure lightweight sortable is available for repeatable panels
     enqueue_admin_script('qp-sortable', 'assets/js/qp-sortable.js', ['admin-jquery'], $asset_ver, true);
     enqueue_admin_script('qpmeta-admin', 'assets/js/qpmeta-admin.js', ['admin-jquery','qp-sortable'], $asset_ver, true);
+    // qpmeta `repeatable_row` field (add/remove/reorder rows)
+    enqueue_admin_script('qpmeta-rows', 'assets/js/qpmeta-rows.js', [], $asset_ver, true);
     // TinyMCE core - use non-minified for debugging
     enqueue_admin_script('tinymce', 'assets/js/tinymce/tinymce.js', ['admin-jquery'], $asset_ver, true);
     // Editor initializer for post content + QPMeta richtext fields
