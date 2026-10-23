@@ -77,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (session_status() === PHP_SESSION_NONE) @session_start();
     if (empty($msg)) $msg = 'Permalink settings saved';
     $_SESSION['admin_notice'] = $msg;
-    $redirect = strtok($_SERVER['REQUEST_URI'] ?? '/admin/permalinks.php', '?');
+    $redirect = strtok($_SERVER['REQUEST_URI'] ?? ('/' . qp_admin_dir() . '/permalinks.php'), '?');
     header('Location: ' . $redirect);
     exit;
     // Rebuild textarea contents from the just-saved patterns so the form

@@ -17,6 +17,8 @@ if (is_file(__DIR__ . '/includes/site-constants.php')) {
 require __DIR__ . '/db.php';
 // Provide minimal option helpers for CLI (so cron can read/update site options)
 require_once __DIR__ . '/includes/cli-helpers.php';
+// Purge the page cache when scheduled work publishes something (only while the cache is on)
+if (is_file(__DIR__ . '/' . ($config['uploads_dir'] ?? 'uploads') . '/page-cache/state.json')) require_once __DIR__ . '/includes/page-cache.php';
 require __DIR__ . '/includes/qp-cron.php';
 require __DIR__ . '/includes/qp-cron-queue.php';
 require __DIR__ . '/includes/updater.php';
@@ -50,28 +52,18 @@ if ($http) {
 }
 
 echo "QP Cron runner starting...\n";
-$res = qp_process_queue($limit);
-echo "Processed: " . count($res['processed']) . " errors: " . count($res['errors']) . "\n";
-if (!empty($res['processed'])) echo json_encode($res['processed'], JSON_PRETTY_PRINT) . "\n";
-
-// Also process scheduled posts (publish them when their published_at has arrived)
-$sch = qp_process_scheduled_posts($limit);
-echo "Scheduled published: " . count($sch['published']) . " errors: " . count($sch['errors']) . "\n";
-if (!empty($sch['published'])) echo json_encode($sch['published'], JSON_PRETTY_PRINT) . "\n";
-
-// If the mail subsystem is present, attempt to process the mail queue as part of cron runs.
-if (file_exists(__DIR__ . '/includes/qp-mail.php')) {
-    require_once __DIR__ . '/includes/qp-mail.php';
-    if (function_exists('qp_mail_process_queue')) {
-        echo "Processing mail queue...\n";
-        $mailSettings = function_exists('get_option_meta') ? get_option_meta('qp_mail_settings') : [];
-        $maxAttempts = intval($mailSettings['queue_max_attempts'] ?? 5);
-        $mailRes = qp_mail_process_queue(50, $maxAttempts, null);
-        echo "Mail processed: " . ($mailRes['processed'] ?? 0) . " Sent: " . ($mailRes['sent'] ?? 0) . " Failed: " . ($mailRes['failed'] ?? 0) . "\n";
-        if (!empty($mailRes['errors'])) {
-            foreach ($mailRes['errors'] as $err) echo "Mail error: $err\n";
-        }
-    }
+// Same function the built-in worker and the external ping run (includes/qp-cron.php).
+$res = qp_cron_tick(['seconds' => 3600, 'tasks' => $limit, 'posts' => $limit, 'mail' => 50]);
+echo "Processed: " . count($res['queue']['processed']) . " errors: " . count($res['queue']['errors']) . "\n";
+if (!empty($res['queue']['processed'])) echo json_encode($res['queue']['processed'], JSON_PRETTY_PRINT) . "\n";
+echo "Scheduled published: " . count($res['posts']['published']) . " errors: " . count($res['posts']['errors']) . "\n";
+if (!empty($res['posts']['published'])) echo json_encode($res['posts']['published'], JSON_PRETTY_PRINT) . "\n";
+if ($res['mail'] !== null) {
+    echo "Mail processed: " . ($res['mail']['processed'] ?? 0) . " Sent: " . ($res['mail']['sent'] ?? 0) . " Failed: " . ($res['mail']['failed'] ?? 0) . "\n";
+    foreach (($res['mail']['errors'] ?? []) as $err) echo "Mail error: $err\n";
 }
+foreach ($res['errors'] as $err) echo "Cron error: $err\n";
+// Tell the built-in worker a real runner is healthy (it then stays quiet for 15 minutes).
+qp_cron_note_runner('cli');
 
 exit(0);

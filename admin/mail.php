@@ -429,7 +429,7 @@ if (!empty($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)) {
                 .then(r=>r.json()).then(j=>{
                     if (j && j.status === 'needs_migration'){
                         const missing = Array.isArray(j.missing) ? j.missing : (j.missing ? [j.missing] : []);
-                        const listEl = qs('#qp-mail-missing-list'); if (listEl) listEl.textContent = missing.join(', ');
+                        const listEl = qs('#qp-mail-missing-list'); if (listEl) listEl.textContent = missing.join(', ') + (j.reason ? ' (' + j.reason + ')' : '');
                         const banner = qs('#qp-mail-migration-banner'); if (banner) banner.style.display = 'block';
                         const migrateBtn = qs('#qp-mail-migrate'); if (migrateBtn) migrateBtn.style.display = 'inline-block';
                         const bannerBtn = qs('#qp-mail-migrate-banner-btn'); if (bannerBtn) bannerBtn.addEventListener('click', function(){ if (migrateBtn) migrateBtn.click(); });

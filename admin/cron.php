@@ -15,6 +15,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (function_exists('qp_set_admin_notice')) qp_set_admin_notice('Invalid CSRF token.');
         header('Location: cron.php'); exit;
     }
+    if ($action === 'save_ping') {
+        update_option_meta('qp_cron_ping_enabled', !empty($_POST['qp_cron_ping_enabled']));
+        if (function_exists('qp_set_admin_notice')) qp_set_admin_notice('External ping ' . (!empty($_POST['qp_cron_ping_enabled']) ? 'enabled' : 'disabled') . '.');
+        header('Location: cron.php'); exit;
+    }
     if ($action === 'repair_tables') {
         if (function_exists('qp_cron_queue_install')) qp_cron_queue_install();
         if (function_exists('qp_cron_logs_install')) qp_cron_logs_install();
@@ -211,6 +216,60 @@ require_once __DIR__ . '/inc/header.php';
             <?php qp_nonce_field('qp_cron_action'); ?>
             <button class="btn btn-warning" type="submit">Generate/Rotate Runner Key</button>
         </form>
+    </div>
+
+    <?php
+    // Scheduler status (C2): what runs due work on this site, and whether anything is late.
+    $cs = function_exists('qp_cron_state') ? qp_cron_state() : [];
+    $cs_mode = function_exists('qp_cron_mode') ? qp_cron_mode() : 'worker';
+    $cs_modes = ['worker' => 'Built-in worker', 'after_response' => 'After the page only', 'ping' => 'External ping only', 'off' => 'Off (server crontab)'];
+    $cs_next = function_exists('qp_cron_next_due') ? qp_cron_next_due() : null;
+    $cs_runner_fresh = !empty($cs['runner_at']) && (time() - (int)$cs['runner_at']) < 900;
+    $cs_late = 0; $cs_late_heavy = 0; $cs_failed = 0;
+    try {
+        $cs_pdo = db(); $cs_q = qp_cron_queue_table(); $cs_cut = time() - 300;
+        $cs_late = (int)$cs_pdo->query("SELECT COUNT(*) FROM {$cs_q} WHERE status = 'pending' AND heavy = 0 AND next_run < {$cs_cut}")->fetchColumn();
+        $cs_late_heavy = (int)$cs_pdo->query("SELECT COUNT(*) FROM {$cs_q} WHERE status = 'pending' AND heavy = 1 AND next_run < {$cs_cut}")->fetchColumn();
+        $cs_failed = (int)$cs_pdo->query("SELECT COUNT(*) FROM {$cs_q} WHERE status = 'failed'")->fetchColumn();
+    } catch (Throwable $_) {}
+    $cs_fmt = function ($ts) { return function_exists('format_site_datetime') ? format_site_datetime((int)$ts) : date('Y-m-d H:i:s', (int)$ts); };
+    $cs_nothing_runs = ($cs_mode === 'off' || $cs_mode === 'ping') && !$cs_runner_fresh;
+    ?>
+    <div class="mb-4">
+        <h5>Status</h5>
+        <table class="table table-sm" style="max-width:700px;">
+            <tr><th style="width:220px">Mode</th><td><?= htmlspecialchars($cs_modes[$cs_mode] ?? $cs_mode) ?> <a class="small" href="general-settings.php">change</a></td></tr>
+            <tr><th>Next work due</th><td><?= $cs_next === null ? 'unknown (worked out on the next run)' : htmlspecialchars($cs_fmt($cs_next)) . ($cs_next <= time() ? ' <span class="text-warning">(due now)</span>' : '') ?></td></tr>
+            <tr><th>Last server crontab / ping run</th><td><?= !empty($cs['runner_at']) ? htmlspecialchars($cs_fmt($cs['runner_at'])) . ' (' . htmlspecialchars((string)($cs['runner'] ?? '')) . ')' . ($cs_runner_fresh ? ' - healthy, the built-in worker stays quiet' : ' - older than 15 minutes') : 'never' ?></td></tr>
+            <tr><th>Last built-in run</th><td><?php if (!empty($cs['last_slice'])): ?><?= htmlspecialchars($cs_fmt($cs['last_slice']['at'])) ?>: <?= (int)$cs['last_slice']['tasks'] ?> tasks, <?= (int)$cs['last_slice']['posts'] ?> posts, <?= (int)$cs['last_slice']['mail'] ?> mails, <?= (int)$cs['last_slice']['errors'] ?> errors<?php else: ?>never<?php endif; ?></td></tr>
+            <tr><th>Loopback request</th><td><?php if (!isset($cs['loopback_ok'])): ?>not tested yet<?php elseif ($cs['loopback_ok']): ?>works<?php else: ?><span class="text-warning">failed - the site cannot call itself; the short in-request run is used</span><?php endif; ?></td></tr>
+            <tr><th>Late tasks</th><td><?= $cs_late ?> waiting more than 5 minutes<?= $cs_late_heavy ? ', plus ' . $cs_late_heavy . ' heavy (they run only from a crontab, a ping, the Run button or the Settings option)' : '' ?><?= $cs_failed ? '; ' . $cs_failed . ' failed' : '' ?></td></tr>
+        </table>
+        <?php if ($cs_nothing_runs && ($cs_late || $cs_late_heavy)): ?>
+            <div class="alert alert-warning">Tasks are late and nothing on this site is running them: the mode is "<?= htmlspecialchars($cs_modes[$cs_mode]) ?>" and no crontab or ping has reported in during the last 15 minutes. Set up the crontab (see the runner key below) or switch the mode on Settings &gt; General.</div>
+        <?php elseif ($cs_late > 0 && $cs_mode === 'worker'): ?>
+            <div class="alert alert-info">Some tasks are late. On a quiet site the built-in worker only runs when someone visits; a server crontab on <code>qp-cron.php</code> removes the wait.</div>
+        <?php endif; ?>
+    </div>
+
+    <?php $ping_on = function_exists('qp_cron_ping_enabled') && qp_cron_ping_enabled(); $ping_url = rtrim(function_exists('get_home_url') ? get_home_url() : SITE_URL, '/') . '/?qp_cron=1'; ?>
+    <div class="mb-4">
+        <h5>External Ping</h5>
+        <form method="post">
+            <input type="hidden" name="action" value="save_ping">
+            <?php qp_nonce_field('qp_cron_action'); ?>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="qp_cron_ping_enabled" name="qp_cron_ping_enabled" value="1"<?= $ping_on ? ' checked' : '' ?>>
+                <label class="form-check-label" for="qp_cron_ping_enabled">Allow a web-cron service to run scheduled tasks by calling a URL (off by default)</label>
+            </div>
+            <button class="btn btn-sm btn-secondary mt-2" type="submit">Save</button>
+        </form>
+        <p class="small text-muted mt-2">
+            For hosts without a crontab. Send a <strong>POST</strong> to <code><?= htmlspecialchars($ping_url) ?></code> with the runner key in the body (<code>key=...</code>) or in an <code>X-QP-Cron-Key</code> header, at least every few minutes.
+            It runs everything a crontab would, heavy tasks included. A <code>GET</code> to <code>?qp_cron=&lt;runner key&gt;</code> also works for services that can only GET, but then the key is written to server logs.
+            Wrong keys get a bare 403; ten in a minute lock it for a minute; runs are spaced at least 5 seconds apart. While it keeps calling, the built-in worker stays quiet.
+            <?php if (!empty($cs['last_ping_run'])): ?>Last ping run: <?= htmlspecialchars($cs_fmt($cs['last_ping_run']['at'])) ?> (<?= (int)$cs['last_ping_run']['tasks'] ?> tasks, <?= (int)$cs['last_ping_run']['posts'] ?> posts, <?= (int)$cs['last_ping_run']['mail'] ?> mails).<?php endif; ?>
+        </p>
     </div>
 
     <div class="mb-4">

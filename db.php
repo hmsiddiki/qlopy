@@ -10,8 +10,15 @@ if (!isset($config) || !is_array($config)) {
     $config = require __DIR__ . '/config.php';
 }
 
+// Debug-only profiler (includes/profiler.php): costs one array lookup when 'profiler' is not set in config.php.
+$qp_pdo_class = 'PDO';
+if (!empty($config['profiler']) && is_file(__DIR__ . '/includes/profiler.php')) {
+    require_once __DIR__ . '/includes/profiler.php';
+    if (defined('QP_PROFILE')) $qp_pdo_class = 'QP_Profiled_PDO';
+}
+
 try {
-    $pdo = new PDO(
+    $pdo = new $qp_pdo_class(
         "mysql:host={$config['db_host']};dbname={$config['db_name']};charset=utf8mb4",
         $config['db_user'],
         $config['db_pass']

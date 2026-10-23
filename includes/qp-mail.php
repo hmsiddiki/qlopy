@@ -106,57 +106,41 @@ function qp_mail_update_settings(array $settings): bool {
     return false;
 }
 
-// Installer: create tables (safe if already exists)
+// Table names follow the site's table prefix (config.php db_table_prefix), like every other core table.
+function qp_mail_table(string $name): string {
+    return function_exists('table_name') ? table_name('mail_' . $name) : 'qp_mail_' . $name;
+}
+
+// Installer: create tables (safe if already exists). The definitions live in includes/mail-schema.php, shared with install.php.
 function qp_mail_install_tables(): bool {
     if (!function_exists('db')) return false;
-    $pdo = db();
     try {
-        $sql = "CREATE TABLE IF NOT EXISTS qp_mail_log (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            recipients TEXT NOT NULL,
-            subject VARCHAR(255) DEFAULT '',
-            headers TEXT,
-            body LONGTEXT,
-            transport VARCHAR(32) DEFAULT 'mail',
-            status VARCHAR(32) DEFAULT 'queued',
-            error TEXT,
-            attempts INT DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            sent_at DATETIME DEFAULT NULL,
-            meta JSON DEFAULT NULL
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
-        $pdo->exec($sql);
-
-        $sql2 = "CREATE TABLE IF NOT EXISTS qp_mail_queue (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            payload LONGTEXT NOT NULL,
-            attempts INT DEFAULT 0,
-            next_attempt_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
-        $pdo->exec($sql2);
-
-        $sql3 = "CREATE TABLE IF NOT EXISTS qp_mail_debug (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            log_id INT NULL,
-            transcript LONGTEXT NOT NULL,
-            transport VARCHAR(32) DEFAULT 'smtp',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            INDEX (log_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
-        $pdo->exec($sql3);
+        require_once __DIR__ . '/mail-schema.php';
+        qp_mail_create_tables(db(), defined('DB_TABLE_PREFIX') ? DB_TABLE_PREFIX : 'qp_');
         return true;
     } catch (Throwable $e) {
+        $GLOBALS['qp_mail_install_error'] = $e->getMessage();
         return false;
     }
 }
 
-// Ensure installer runs when included and DB helper present
-if (function_exists('db')) @qp_mail_install_tables();
-
+/**
+ * Make sure the mail tables exist, once per request and (after a success) once per site: the option qp_mail_schema remembers it,
+ * so a normal request pays nothing. The old include-time call ran before the database helper existed on a fresh install, so a
+ * new site never got its tables and the Mail screen showed "tables appear to be missing".
+ */
+function qp_mail_ensure_tables(): bool {
+    static $done = null;
+    if ($done !== null) return $done;
+    if (function_exists('qp_option_raw') && qp_option_raw('qp_mail_schema') !== null && qp_option_raw('qp_mail_schema') !== false && qp_option_raw('qp_mail_schema') !== '') return $done = true;
+    $ok = qp_mail_install_tables();
+    if ($ok && function_exists('update_option_meta')) update_option_meta('qp_mail_schema', 1);
+    return $done = $ok;
+}
 // Basic logging function (writes to DB if available, else options fallback)
 function qp_mail_log(array $row): bool {
     global $pdo;
+    if (!empty($pdo)) qp_mail_ensure_tables();
     $now = date('Y-m-d H:i:s');
     $meta = $row['meta'] ?? [];
     if (!is_array($meta)) {
@@ -178,13 +162,13 @@ function qp_mail_log(array $row): bool {
 
     if (!empty($pdo)) {
         try {
-            $sql = "INSERT INTO qp_mail_log (recipients,subject,headers,body,transport,status,error,attempts,created_at,sent_at,meta) VALUES (:recipients,:subject,:headers,:body,:transport,:status,:error,:attempts,:created_at,:sent_at,:meta)";
+            $sql = "INSERT INTO " . qp_mail_table('log') . " (recipients,subject,headers,body,transport,status,error,attempts,created_at,sent_at,meta) VALUES (:recipients,:subject,:headers,:body,:transport,:status,:error,:attempts,:created_at,:sent_at,:meta)";
             $stmt = $pdo->prepare($sql);
             $stmt->execute($data);
             $last = (int)$pdo->lastInsertId();
             if (!empty($meta['debug'])) {
                 try {
-                    $dsql = "INSERT INTO qp_mail_debug (log_id, transcript, transport) VALUES (:log_id, :transcript, :transport)";
+                    $dsql = "INSERT INTO " . qp_mail_table('debug') . " (log_id, transcript, transport) VALUES (:log_id, :transcript, :transport)";
                     $dstmt = $pdo->prepare($dsql);
                     $dstmt->execute(['log_id' => $last, 'transcript' => $meta['debug'], 'transport' => $data['transport']]);
                 } catch (Throwable $_e) { }
@@ -207,12 +191,14 @@ function qp_mail_log(array $row): bool {
 // Enqueue payload (writes to DB queue or option fallback)
 function qp_mail_enqueue(array $payload): bool {
     global $pdo;
-    $now = date('Y-m-d H:i:s');
+    if (!empty($pdo)) qp_mail_ensure_tables();
+    $now = gmdate('Y-m-d H:i:s');
     if (!empty($pdo)) {
         try {
-            $sql = "INSERT INTO qp_mail_queue (payload,attempts,next_attempt_at,created_at) VALUES (:payload,0,:next_attempt_at,:created_at)";
+            $sql = "INSERT INTO " . qp_mail_table('queue') . " (payload,attempts,next_attempt_at,created_at) VALUES (:payload,0,:next_attempt_at,:created_at)";
             $stmt = $pdo->prepare($sql);
             $stmt->execute(['payload' => json_encode($payload), 'next_attempt_at' => $now, 'created_at' => $now]);
+            if (function_exists('qp_cron_note_work')) qp_cron_note_work(time());
             return true;
         } catch (Throwable $e) { }
     }
@@ -345,8 +331,9 @@ function qp_mail($to, $subject, $message, $headers = [], $attachments = []) {
 // Simple accessor functions (queue/log retrieval) to be expanded later
 function qp_mail_get_queue(int $limit = 200) {
     global $pdo;
+    if (!empty($pdo)) qp_mail_ensure_tables();
     if (!empty($pdo)) {
-        try { $stmt = $pdo->prepare('SELECT * FROM qp_mail_queue ORDER BY next_attempt_at ASC LIMIT ?'); $stmt->bindValue(1,(int)$limit,PDO::PARAM_INT); $stmt->execute(); return $stmt->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { }
+        try { $stmt = $pdo->prepare('SELECT * FROM ' . qp_mail_table('queue') . ' ORDER BY next_attempt_at ASC LIMIT ?'); $stmt->bindValue(1,(int)$limit,PDO::PARAM_INT); $stmt->execute(); return $stmt->fetchAll(PDO::FETCH_ASSOC); } catch (Throwable $e) { }
     }
     $q = function_exists('get_option_meta') ? @get_option_meta('qp_mail_queue') : @get_option('qp_mail_queue', []);
     return is_array($q) ? array_slice($q,0,$limit) : [];
@@ -354,9 +341,10 @@ function qp_mail_get_queue(int $limit = 200) {
 
 function qp_mail_get_logs(int $limit = 200) {
     global $pdo;
+    if (!empty($pdo)) qp_mail_ensure_tables();
     if (!empty($pdo)) {
         try {
-            $stmt = $pdo->prepare('SELECT * FROM qp_mail_log ORDER BY created_at DESC LIMIT ?');
+            $stmt = $pdo->prepare('SELECT * FROM ' . qp_mail_table('log') . ' ORDER BY created_at DESC LIMIT ?');
             $stmt->bindValue(1,(int)$limit,PDO::PARAM_INT);
             $stmt->execute();
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -507,7 +495,7 @@ function qp_mail_clear_oauth(): bool {
 // Build provider-specific OAuth authorize URL for admin to visit.
 function qp_mail_oauth_authorize_url(string $provider = 'google', string $clientId = '', string $redirect_uri = '', array $scopes = [], string $tenant = 'common'): string {
     $p = strtolower($provider);
-    $redirect = $redirect_uri ?: (isset($_SERVER['REQUEST_SCHEME']) ? $_SERVER['REQUEST_SCHEME'] : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? '') . '/admin/mail.php';
+    $redirect = $redirect_uri ?: (isset($_SERVER['REQUEST_SCHEME']) ? $_SERVER['REQUEST_SCHEME'] : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? '') . (function_exists('qp_admin_dir') ? '/' . qp_admin_dir() : '/admin') . '/mail.php';
     $scope = !empty($scopes) ? implode(' ', $scopes) : ($p === 'microsoft' ? 'offline_access openid smtp.send' : 'https://mail.google.com/');
     if ($p === 'microsoft' || $p === 'azure' || $p === 'office365') {
         $tenant = $tenant ?: 'common';
@@ -536,7 +524,7 @@ function qp_mail_oauth_authorize_url(string $provider = 'google', string $client
 // Exchange authorization code for tokens and persist refresh token in settings (encrypted). Returns array or throws.
 function qp_mail_oauth_exchange_code(string $provider, string $code, string $clientId, string $clientSecret, string $redirect_uri = '', string $tenant = 'common'): array {
     $p = strtolower($provider);
-    $redirect = $redirect_uri ?: (isset($_SERVER['REQUEST_SCHEME']) ? $_SERVER['REQUEST_SCHEME'] : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? '') . '/admin/mail.php';
+    $redirect = $redirect_uri ?: (isset($_SERVER['REQUEST_SCHEME']) ? $_SERVER['REQUEST_SCHEME'] : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? '') . (function_exists('qp_admin_dir') ? '/' . qp_admin_dir() : '/admin') . '/mail.php';
     if ($p === 'microsoft' || $p === 'azure' || $p === 'office365') {
         $url = "https://login.microsoftonline.com/{$tenant}/oauth2/v2.0/token";
         $data = [
@@ -812,7 +800,7 @@ function qp_mail_process_queue(int $limit = 20, int $max_attempts = 5, ?int $rat
     try {
         // Optional rate limit check
         if ($rate_limit_per_minute && $rate_limit_per_minute > 0) {
-            $stmt = $pdo->prepare("SELECT COUNT(*) FROM qp_mail_log WHERE status = 'sent' AND created_at >= (UTC_TIMESTAMP() - INTERVAL 1 MINUTE)");
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM " . qp_mail_table('log') . " WHERE status = 'sent' AND created_at >= (UTC_TIMESTAMP() - INTERVAL 1 MINUTE)");
             $stmt->execute();
             $sent_last_min = intval($stmt->fetchColumn());
             if ($sent_last_min >= $rate_limit_per_minute) {
@@ -820,7 +808,7 @@ function qp_mail_process_queue(int $limit = 20, int $max_attempts = 5, ?int $rat
             }
         }
 
-        $stmt = $pdo->prepare('SELECT * FROM qp_mail_queue WHERE next_attempt_at <= UTC_TIMESTAMP() ORDER BY next_attempt_at ASC LIMIT ?');
+        $stmt = $pdo->prepare('SELECT * FROM ' . qp_mail_table('queue') . ' WHERE next_attempt_at <= UTC_TIMESTAMP() ORDER BY next_attempt_at ASC LIMIT ?');
         $stmt->bindValue(1, (int)$limit, PDO::PARAM_INT);
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -833,26 +821,26 @@ function qp_mail_process_queue(int $limit = 20, int $max_attempts = 5, ?int $rat
             try {
                 $pdo->beginTransaction();
                 // lock this row by selecting for update
-                $lock = $pdo->prepare('SELECT attempts FROM qp_mail_queue WHERE id = ? FOR UPDATE');
+                $lock = $pdo->prepare('SELECT attempts FROM ' . qp_mail_table('queue') . ' WHERE id = ? FOR UPDATE');
                 $lock->execute([$id]);
                 $cur = $lock->fetchColumn();
                 if ($cur === false) { $pdo->commit(); continue; }
                 $sent = qp_mail_send_payload($payload);
                 if ($sent) {
-                    $del = $pdo->prepare('DELETE FROM qp_mail_queue WHERE id = ?');
+                    $del = $pdo->prepare('DELETE FROM ' . qp_mail_table('queue') . ' WHERE id = ?');
                     $del->execute([$id]);
                     $summary['sent']++;
                 } else {
                     $attempts++;
                     if ($attempts >= $max_attempts) {
                         // move to logs as failed permanently (qp_mail_log already recorded), and remove from queue
-                        $del = $pdo->prepare('DELETE FROM qp_mail_queue WHERE id = ?');
+                        $del = $pdo->prepare('DELETE FROM ' . qp_mail_table('queue') . ' WHERE id = ?');
                         $del->execute([$id]);
                         $summary['failed']++;
                     } else {
                         $backoff = pow(2, $attempts) * 60; // seconds
-                        $next = date('Y-m-d H:i:s', time() + $backoff);
-                        $upd = $pdo->prepare('UPDATE qp_mail_queue SET attempts = ?, next_attempt_at = ? WHERE id = ?');
+                        $next = gmdate('Y-m-d H:i:s', time() + $backoff);
+                        $upd = $pdo->prepare('UPDATE ' . qp_mail_table('queue') . ' SET attempts = ?, next_attempt_at = ? WHERE id = ?');
                         $upd->execute([$attempts, $next, $id]);
                         $summary['failed']++;
                     }
@@ -865,7 +853,7 @@ function qp_mail_process_queue(int $limit = 20, int $max_attempts = 5, ?int $rat
             }
             // check rate limit per minute between items
             if ($rate_limit_per_minute && $rate_limit_per_minute > 0) {
-                $stmt2 = $pdo->prepare("SELECT COUNT(*) FROM qp_mail_log WHERE status = 'sent' AND created_at >= (UTC_TIMESTAMP() - INTERVAL 1 MINUTE)");
+                $stmt2 = $pdo->prepare("SELECT COUNT(*) FROM " . qp_mail_table('log') . " WHERE status = 'sent' AND created_at >= (UTC_TIMESTAMP() - INTERVAL 1 MINUTE)");
                 $stmt2->execute();
                 $sent_last_min = intval($stmt2->fetchColumn());
                 if ($sent_last_min >= $rate_limit_per_minute) break;

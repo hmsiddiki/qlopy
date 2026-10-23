@@ -212,6 +212,10 @@ function qp_resolve_asset_order($type) {
 }
 
 function print_styles() {
+    // The one point both bundled themes reach inside <head> (the qp_head action fires after header.php, in the body). The SEO module
+    // and plugins that print head tags hook here. Fires once per request.
+    static $head_tags_fired = false;
+    if (!$head_tags_fired) { $head_tags_fired = true; if (function_exists('do_action')) do_action('qp_head_tags'); }
     global $qlopy_assets;
     // Build deterministic list of style handles in current queue
     // skip caching on admin pages (admin uses separate admin enqueue system)

@@ -21,11 +21,61 @@ $themes_dir = $config['themes_dir'] ?? 'themes';
 $plugins_dir = $config['plugins_dir'] ?? 'plugins';
 $uploads_dir = $config['uploads_dir'] ?? 'uploads';
 
+// REST API (includes/rest-entry.php): a URL under /api/ (or ?qp_rest=) is answered here, before the page cache, the theme and the router.
+// Every other request pays one strpos and one isset.
+if (isset($_GET['qp_rest']) || strpos($_SERVER['REQUEST_URI'] ?? '', '/api/') !== false) {
+    require_once __DIR__ . '/includes/rest-entry.php';
+    $qp_rest_route = qp_rest_request_route($config);
+    if ($qp_rest_route !== null && preg_match('~^/[a-z0-9_-]+(/|$)~', $qp_rest_route)) {
+        ob_start();   // a plugin that echoes while loading must not corrupt the JSON
+        define('QP_REST_REQUEST', true);
+        require_once __DIR__ . '/auth.php';
+        if (function_exists('auth_init_from_token')) auth_init_from_token();
+        require_once __DIR__ . '/includes/ajax-hooks.php';
+        require_once __DIR__ . '/includes/post-types.php';
+        // the same core files the page request loads before plugins, because plugins call them while they load
+        require_once __DIR__ . '/' . $admin_dir . '/admin-ajax-hook.php';
+        foreach (['qpmeta', 'admin-menus', 'assets', 'rewrite', 'query-vars', 'query', 'comments'] as $qp_core_inc) require_once __DIR__ . '/includes/' . $qp_core_inc . '.php';
+        unset($qp_core_inc);
+        require_once __DIR__ . '/includes/rest.php';
+        require_once __DIR__ . '/includes/rest-auth.php';
+        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') { qp_rest_serve($qp_rest_route); exit; }   // preflight: no plugin code runs
+        // Plugins load the way the page request loads them, without the theme.
+        define('THEME_URL', SITE_URL . "/$content_dir/$themes_dir/" . (qp_option_raw('active_theme') ?: 'default'));
+        $plugin_dir = __DIR__ . "/$content_dir/$plugins_dir/";
+        $active_plugins = qp_option_raw('active_plugins');
+        $active_plugins = $active_plugins ? json_decode($active_plugins, true) : [];
+        if (is_array($active_plugins) && is_dir($plugin_dir)) {
+            foreach ($active_plugins as $plugin => $v) {
+                $slug = is_string($plugin) && !is_numeric($plugin) ? $plugin : (is_string($v) ? $v : null);
+                if ($slug && is_file($plugin_dir . $slug . '/plugin.php')) include_once $plugin_dir . $slug . '/plugin.php';
+            }
+        }
+        qp_rest_finish($qp_rest_route);   // answers and exits, or returns when nobody registered this namespace
+        unset($active_plugins);
+    }
+}
+
+// Page cache for anonymous visitors (includes/page-cache-early.php): nothing here unless uploads/page-cache/state.json exists, which
+// is only true while the cache is switched on. A hit is answered before auth.php, the theme or any plugin is loaded.
+$qp_pc_dir = __DIR__ . '/' . $uploads_dir . '/page-cache';
+if (is_file($qp_pc_dir . '/state.json')) {
+    require_once __DIR__ . '/includes/page-cache-early.php';
+    qp_pc_early_serve($config, $qp_pc_dir);
+}
+
 require_once __DIR__ . '/auth.php';
+if (isset($GLOBALS['qp_pc_state'])) {
+    // Loaded before the plugins so they can declare compatibility while they load. The buffer starts here, before any plugin's own,
+    // and its shutdown function is registered first so it sees the page before plugin shutdown handlers rewrite or flush it.
+    require_once __DIR__ . '/includes/page-cache.php';
+    qp_page_cache_begin();
+}
 // Initialize token-based auth (migrates to token if needed)
 if (function_exists('auth_init_from_token')) {
     auth_init_from_token();
 }
+if (defined('QP_PROFILE')) qp_profile_mark('auth_load_and_token');
 // Use centralized action/filter system
 require_once __DIR__ . '/includes/ajax-hooks.php';
 require_once __DIR__ . '/includes/post-types.php';
@@ -33,6 +83,7 @@ require_once __DIR__ .'/'.$admin_dir. '/admin-ajax-hook.php';
 require_once __DIR__ . '/includes/qpmeta.php';
 require_once __DIR__ . '/includes/admin-menus.php';
 require_once __DIR__ . '/includes/assets.php';
+if (defined('QP_PROFILE')) qp_profile_mark('core_includes');
 // QP-Cron integration removed; scheduler runner and page-trigger fallback deleted.
 
 // --- Begin centralized rewrite integration ---
@@ -83,13 +134,13 @@ require_once __DIR__ . '/includes/comments.php';
 
 
 
+if (defined('QP_PROFILE')) qp_profile_mark('core_bootstrap');
+
 // Load theme and plugin system
 $theme_dir_root = __DIR__ . "/$content_dir/$themes_dir/";
 
 // Trust DB option for active theme; fall back to 'default' if unset
-$stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'active_theme' LIMIT 1");
-$stmt->execute();
-$active_theme = $stmt->fetchColumn() ?: 'default';
+$active_theme = qp_option_raw('active_theme') ?: 'default';
 
 // Clean preview handling: only administrators can preview themes on
 // the frontend. Preview is driven by a simple `?preview_theme=slug`
@@ -162,7 +213,7 @@ if (!is_dir($theme_dir)) {
     echo "h1{font-size:24px;margin-bottom:12px;}p{margin:6px 0;}</style></head><body>";
     echo "<h1>No theme is available to render this site</h1>";
     echo "<p>The active theme is not installed, and the default theme could not be found.</p>";
-    echo "<p>Please upload a theme into the content/themes directory and activate it from the admin Themes screen.</p>";
+    echo "<p>Please upload a theme into the " . htmlspecialchars("$content_dir/$themes_dir") . " directory and activate it from the admin Themes screen.</p>";
     echo "</body></html>";
     exit;
 }
@@ -170,19 +221,20 @@ if (!is_dir($theme_dir)) {
 define('THEME_URL', SITE_URL . "/$content_dir/$themes_dir/$active_theme");
 ////moved PLUGIN_URL definition to auth.php to avoid circular dependency with plugin.php
 
+if (defined('QP_PROFILE')) qp_profile_mark('theme_resolve');
+
 // Include theme functions for the resolved active theme
 if (file_exists($theme_dir . 'functions.php')) {
     include_once $theme_dir . 'functions.php';
 }
+if (defined('QP_PROFILE')) qp_profile_mark('theme_functions');
 
 // Debug helper removed: `?qp_dbg=1` support removed for production.
 
 // Load active plugins by trusting the DB list; missing plugin
 // directories/files are simply skipped.
 $plugin_dir = __DIR__ . "/$content_dir/$plugins_dir/";
-$stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'active_plugins' LIMIT 1");
-$stmt->execute();
-$active_plugins_json = $stmt->fetchColumn();
+$active_plugins_json = qp_option_raw('active_plugins');
 $active_plugins = $active_plugins_json ? json_decode($active_plugins_json, true) : [];
 if (is_array($active_plugins) && is_dir($plugin_dir)) {
     foreach ($active_plugins as $plugin => $v) {
@@ -196,7 +248,18 @@ if (is_array($active_plugins) && is_dir($plugin_dir)) {
 }
 
 
+// SEO module (Settings > SEO). The basic tier is always on: description, canonical, robots, Open Graph and Twitter tags, sitemap and
+// robots.txt. The advanced tier (structured data, redirects, 404 log, hreflang) loads only when "Advanced SEO" is ticked.
+if (function_exists('get_option_meta')) {
+    require_once __DIR__ . '/includes/seo.php';
+    // /robots.txt, /sitemap.xml and /sitemap-<provider>-<n>.xml are answered here, before any template (a physical robots.txt wins).
+    if ($uri === 'robots.txt' || strncmp($uri, 'sitemap', 7) === 0) qp_seo_serve_special($uri);
+    if (qp_seo_enabled()) qp_seo_maybe_redirect($uri);   // redirect manager: matched against a compiled file, no database query
+}
+if (defined('QP_PROFILE')) qp_profile_mark('plugins_load');
+
 do_action('init'); // Plugins and theme can hook here
+if (defined('QP_PROFILE')) qp_profile_mark('init_action');
 // Now that themes/plugins had a chance to register rewrite rules and
 // query vars, ensure compiled rewrite cache includes rules registered
 // during init when pretty permalinks are enabled. This avoids 404s for
@@ -225,11 +288,18 @@ if (function_exists('permalink_get_structure') && permalink_get_structure() === 
 // Now that themes/plugins had a chance to register rewrite rules and
 // query vars, parse the request to populate `qp_query_vars`.
 parse_request(dirname($_SERVER['SCRIPT_NAME']) ?: '');
+if (defined('QP_PROFILE')) qp_profile_mark('route_parse');
 // Expose a stable hook after the router has populated query vars and globals.
 // Plugins can register frontend enqueues and template decisions on `qp_init`.
 do_action('qp_init');
+if (defined('QP_PROFILE')) qp_profile_mark('qp_init_action');
 // Trigger page-fallback cron after plugins/themes have had a chance to register jobs
-if (function_exists('qp_maybe_trigger_page_cron')) qp_maybe_trigger_page_cron();
+// Built-in scheduler (includes/qp-cron-worker.php): a worker request does one short slice and ends here; a normal page load
+// costs one small file read when nothing is due, and starts the worker only after the page has been sent.
+if (isset($_GET['qp_cron_worker'])) { require_once __DIR__ . '/includes/qp-cron-worker.php'; qp_cron_worker_handle(); }
+// Optional external ping (off until enabled on the Cron screen): runs the same tick as the CLI runner and ends the request.
+if (isset($_GET['qp_cron'])) { require_once __DIR__ . '/includes/qp-cron-worker.php'; qp_cron_ping_handle(); }
+if (function_exists('qp_cron_page_trigger')) qp_cron_page_trigger();
 
 // Start output buffering so we can inject preview topbar when needed
 if (!ob_get_level()) ob_start();
@@ -239,6 +309,7 @@ register_shutdown_function(function() use ($active_theme) {
         // Only modify if buffering and previewing session is set
         $buf = '';
         if (ob_get_level()) {
+                $GLOBALS['qp_pc_drain_ok'] = true; // this handler echoes the page unchanged unless an admin is previewing a theme (never cached)
                 $buf = ob_get_clean();
         }
         // Only admins with manage_themes permission see the preview bar
@@ -320,6 +391,7 @@ if (!isset($_GET['route']) && !empty($segments)) {
 $route = $_GET['route'] ?? (($uri === '') ? 'frontpage' : '404');
 
 // --- TEMPLATE LOADING ---
+if (defined('QP_PROFILE')) qp_profile_mark('route_decide');
 
 switch ($route) {
     case 'search':
@@ -327,13 +399,9 @@ switch ($route) {
         include $theme_dir . 'search.php';
         exit;
     case 'frontpage':
-        $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'front_page_option' LIMIT 1");
-        $stmt->execute();
-        $front_page_option = $stmt->fetchColumn() ?: 'theme';
+        $front_page_option = qp_option_raw('front_page_option') ?: 'theme';
         if ($front_page_option === 'static') {
-            $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'front_page_id' LIMIT 1");
-            $stmt->execute();
-            $front_post_id = intval($stmt->fetchColumn() ?: 0);
+            $front_post_id = intval(qp_option_raw('front_page_id') ?: 0);
             if ($front_post_id > 0) {
                 // Load the selected page row and expose to the theme template
                 $stmt = $pdo->prepare("SELECT * FROM " . table_name('posts') . " WHERE id = ? AND post_type = 'page' LIMIT 1");
@@ -345,9 +413,7 @@ switch ($route) {
                     $GLOBALS['front_page_option'] = 'static';
                     $GLOBALS['front_post_id'] = (int)$front_post_id;
                     // Optional: set a site title for header usage
-                    $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'site_name' LIMIT 1");
-                    $stmt->execute();
-                    $GLOBALS['page_title'] = $stmt->fetchColumn() ?: ($page['title'] ?? '');
+                    $GLOBALS['page_title'] = qp_option_raw('site_name') ?: ($page['title'] ?? '');
                     include $theme_dir . 'page.php';
                     exit;
                 }
@@ -454,9 +520,7 @@ switch ($route) {
 
     // Block static home page direct access
     if ($post_type === 'page' && $slug) {
-        $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'front_page_id' LIMIT 1");
-        $stmt->execute();
-        $front_post_id = intval($stmt->fetchColumn() ?: 0);
+        $front_post_id = intval(qp_option_raw('front_page_id') ?: 0);
         if ($front_post_id > 0) {
             $stmt = $pdo->prepare("SELECT slug FROM " . table_name('posts') . " WHERE id = ? AND post_type = 'page'");
             $stmt->execute([$front_post_id]);

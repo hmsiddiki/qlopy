@@ -141,7 +141,7 @@ add_admin_action('iitcm_admin_ajax_qp_mail_retry_item', function($req){
     global $pdo;
     if (empty($pdo)) { echo json_encode(['status'=>'error','message'=>'DB not available']); exit; }
     try {
-        $upd = $pdo->prepare('UPDATE qp_mail_queue SET attempts = 0, next_attempt_at = UTC_TIMESTAMP() WHERE id = ?');
+        $upd = $pdo->prepare('UPDATE ' . qp_mail_table('queue') . ' SET attempts = 0, next_attempt_at = UTC_TIMESTAMP() WHERE id = ?');
         $upd->execute([$id]);
         echo json_encode(['status'=>'success']); exit;
     } catch (Throwable $e) { echo json_encode(['status'=>'error','message'=>$e->getMessage()]); exit; }
@@ -154,7 +154,7 @@ add_admin_action('iitcm_admin_ajax_qp_mail_delete_item', function($req){
     global $pdo;
     if (empty($pdo)) { echo json_encode(['status'=>'error','message'=>'DB not available']); exit; }
     try {
-        $del = $pdo->prepare('DELETE FROM qp_mail_queue WHERE id = ?');
+        $del = $pdo->prepare('DELETE FROM ' . qp_mail_table('queue') . ' WHERE id = ?');
         $del->execute([$id]);
         echo json_encode(['status'=>'success']); exit;
     } catch (Throwable $e) { echo json_encode(['status'=>'error','message'=>$e->getMessage()]); exit; }
@@ -166,7 +166,7 @@ add_admin_action('iitcm_admin_ajax_qp_mail_get_debug', function($req){
     global $pdo;
     if (empty($pdo)) { echo json_encode(['status'=>'error','message'=>'DB not available']); exit; }
     try {
-        $stmt = $pdo->prepare('SELECT transcript FROM qp_mail_debug WHERE log_id = ? ORDER BY id DESC LIMIT 1');
+        $stmt = $pdo->prepare('SELECT transcript FROM ' . qp_mail_table('debug') . ' WHERE log_id = ? ORDER BY id DESC LIMIT 1');
         $stmt->execute([$log_id]);
         $t = $stmt->fetchColumn();
         echo json_encode(['status'=>'success','transcript'=>$t]); exit;
@@ -176,14 +176,17 @@ add_admin_action('iitcm_admin_ajax_qp_mail_get_debug', function($req){
 add_admin_action('iitcm_admin_ajax_qp_mail_apply_migrations', function($req){
     if (! _qp_mail_verify_admin_nonce()) { echo json_encode(['status'=>'error','message'=>'Invalid nonce']); exit; }
     $ok = function_exists('qp_mail_install_tables') ? qp_mail_install_tables() : false;
-    echo json_encode(['status'=>$ok ? 'success' : 'error']); exit;
+    if ($ok && function_exists('update_option_meta')) update_option_meta('qp_mail_schema', 1);
+    echo json_encode(['status'=>$ok ? 'success' : 'error', 'message'=>$ok ? '' : (string)($GLOBALS['qp_mail_install_error'] ?? '')]); exit;
 }, 10, 1);
 
 // Check whether required qp_mail tables exist (for fresh installs)
 add_admin_action('iitcm_admin_ajax_qp_mail_check_migrations', function($req){
     global $pdo;
     if (empty($pdo)) { echo json_encode(['status'=>'error','message'=>'DB not available']); exit; }
-    $needed = ['qp_mail_queue','qp_mail_log','qp_mail_debug'];
+    // Try to create what is missing first; the banner only shows when that fails, with the reason.
+    if (function_exists('qp_mail_ensure_tables')) qp_mail_ensure_tables();
+    $needed = [qp_mail_table('queue'), qp_mail_table('log'), qp_mail_table('debug')];
     $missing = [];
     try {
         foreach ($needed as $t) {
@@ -196,7 +199,7 @@ add_admin_action('iitcm_admin_ajax_qp_mail_check_migrations', function($req){
     } catch (Throwable $e) {
         echo json_encode(['status'=>'error','message'=>'Check failed']); exit;
     }
-    if (empty($missing)) echo json_encode(['status'=>'ready']); else echo json_encode(['status'=>'needs_migration','missing'=>$missing]);
+    if (empty($missing)) echo json_encode(['status'=>'ready']); else echo json_encode(['status'=>'needs_migration','missing'=>$missing,'reason'=>(string)($GLOBALS['qp_mail_install_error'] ?? '')]);
     exit;
 }, 10, 1);
 

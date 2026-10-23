@@ -36,6 +36,27 @@ class QP_Query {
         $this->get_posts();
     }
 
+    /**
+     * Boolean-mode FULLTEXT string for a search phrase, or null when the old LIKE search must be used (C1d).
+     * Only when the option `qp_search_mode` is 'fulltext' and the index was built (status stored by includes/schema.php).
+     * Falls back to LIKE for words FULLTEXT cannot match: under 3 characters or on InnoDB's default stopword list.
+     * Difference to LIKE: matches whole words and word starts ("shoe" finds "shoes"), not text in the middle of a word.
+     */
+    public static function fulltext_query(string $phrase): ?string {
+        if (!function_exists('get_option_meta') || get_option_meta('qp_search_mode') !== 'fulltext') return null;
+        $st = get_option_meta('qp_schema_posts_fulltext');
+        if (!is_array($st) || !in_array($st['status'] ?? '', ['created', 'exists'], true)) return null;
+        $words = preg_split('/[^\p{L}\p{N}]+/u', $phrase, -1, PREG_SPLIT_NO_EMPTY);
+        if (!$words || count($words) > 8) return null;
+        static $stop = ['a','about','an','are','as','at','be','by','com','de','en','for','from','how','i','in','is','it','la','of','on','or','that','the','this','to','was','what','when','where','who','will','with','und','www'];
+        $out = [];
+        foreach ($words as $w) {
+            if (mb_strlen($w) < 3 || in_array(mb_strtolower($w), $stop, true)) return null;
+            $out[] = '+' . $w . '*';
+        }
+        return implode(' ', $out);
+    }
+
     protected function build_where(array &$params): string {
         $where = [];
         if (!empty($this->query_vars['post_type'])) {
@@ -94,8 +115,13 @@ class QP_Query {
             $where[] = "MONTH(p.created_at) = ?"; $params[] = (int)$this->query_vars['month'];
         }
         if (!empty($this->query_vars['s'])) {
-            $s = '%' . str_replace('%','\%',$this->query_vars['s']) . '%';
-            $where[] = '(p.title LIKE ? OR p.content LIKE ?)'; $params[] = $s; $params[] = $s;
+            $ft = self::fulltext_query((string)$this->query_vars['s']);
+            if ($ft !== null) {
+                $where[] = 'MATCH(p.title, p.content) AGAINST (? IN BOOLEAN MODE)'; $params[] = $ft;
+            } else {
+                $s = '%' . str_replace('%','\%',$this->query_vars['s']) . '%';
+                $where[] = '(p.title LIKE ? OR p.content LIKE ?)'; $params[] = $s; $params[] = $s;
+            }
         }
         if (empty($where)) return '1';
         return implode(' AND ', $where);
@@ -326,14 +352,14 @@ class QP_Query {
         // Allow filters to replace title/content per-language before exposing to themes
         if (($fields ?? null) !== 'ids' && function_exists('apply_filters')) {
             $lang = null;
-            if (function_exists('ml_get_current_lang')) $lang = ml_get_current_lang();
+            if (function_exists('qp_current_language')) $lang = qp_current_language();
             foreach ($this->posts as &$post) {
                 $pid = isset($post['id']) ? (int)$post['id'] : null;
                 if (isset($post['title'])) {
-                    $post['title'] = apply_filters('ml_the_title', $post['title'], $pid, $lang);
+                    $post['title'] = qp_i18n_filter('ml_the_title', 'qp_translate_title', $post['title'], $pid, $lang);
                 }
                 if (isset($post['content'])) {
-                    $post['content'] = apply_filters('ml_the_content', $post['content'], $pid, $lang);
+                    $post['content'] = qp_i18n_filter('ml_the_content', 'qp_translate_content', $post['content'], $pid, $lang);
                 }
             }
             unset($post);

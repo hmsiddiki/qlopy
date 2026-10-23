@@ -27,6 +27,21 @@ $core = get_core_update();
 </style>
 <div class="container mt-4">
 <h1>Updates</h1>
+<?php
+$lastFail = function_exists('get_option_meta') ? get_option_meta('qlopy_last_update_failure') : null;
+if (is_array($lastFail) && !empty($lastFail['code']) && (int)($lastFail['time'] ?? 0) > time() - 7 * 86400):
+    $logOn = !empty((function_exists('qlopy_get_updater_settings') ? qlopy_get_updater_settings() : [])['enable_logging']);
+?>
+<div class="alert alert-danger" role="alert">
+  <strong>The last update did not complete</strong> (<?= htmlspecialchars(date('Y-m-d H:i', (int)$lastFail['time'])) ?>,
+  <?= htmlspecialchars(($lastFail['type'] ?? '') . ($lastFail['folder'] ? ' ' . $lastFail['folder'] : '') . ($lastFail['version'] ? ' ' . $lastFail['version'] : '')) ?>):
+  <code><?= htmlspecialchars($lastFail['code']) ?></code><br>
+  <?= htmlspecialchars((string)($lastFail['text'] ?? '')) ?>
+  <?php if (!empty($lastFail['detail'])): ?><br><small class="text-muted"><?= htmlspecialchars((string)$lastFail['detail']) ?></small><?php endif; ?>
+  <br><small><?= $logOn ? 'The step-by-step log is in the updater logs folder.' : 'For step-by-step details, tick <em>Enable logging</em> in Updater Settings below and run the update again.' ?>
+  The task also shows its error on Settings &gt; Cron. This notice goes away after the next successful update.</small>
+</div>
+<?php endif; ?>
 <p class="text-muted">Central update dashboard — shows available core, theme and plugin updates.</p>
 
 <div class="updates-notice">

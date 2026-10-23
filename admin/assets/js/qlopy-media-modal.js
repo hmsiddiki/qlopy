@@ -55,7 +55,7 @@
 
   function openMediaModal(arg1, arg2){
     // Support legacy signature: openMediaModal($triggerField, callback)
-    var adminAjax = window.qlopyAdminAjax || '/admin/ajax.php';
+    var adminAjax = window.qlopyAdminAjax || 'ajax.php';
     var opts = {};
     if (arg1 && arg1.jquery) {
       opts.trigger = arg1;
@@ -475,7 +475,7 @@
 
       function refreshPreviewById(id){
         if (!id || id === '' || id === '0') { $img.hide().attr('src',''); $removeBtn.hide(); return; }
-        var adminAjax = window.qlopyAdminAjax || '/admin/ajax.php';
+        var adminAjax = window.qlopyAdminAjax || 'ajax.php';
         $.post(adminAjax, { action: 'qp_media_batch_get', ids: String(id) }, function(resp){
           if (resp && resp.status === 'success' && resp.items && resp.items.length) {
             var item = resp.items[0];
@@ -492,7 +492,7 @@
       $box.append($status);
 
       function saveFieldValue(val, cb){
-        var adminAjax = window.qlopyAdminAjax || '/admin/ajax.php';
+        var adminAjax = window.qlopyAdminAjax || 'ajax.php';
         $status.text('Saving...');
         $.post(adminAjax, { action: 'qpmeta_save_field_value', object_type: objectType, object_id: objectId, field_name: 'featured_image', field_value: String(val) }, function(r){
           if (r && (r.status === 'success' || r.success === true)) { $status.text('Saved'); if (cb) cb(true); setTimeout(function(){ $status.text(''); }, 1500); }

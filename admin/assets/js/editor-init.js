@@ -66,6 +66,7 @@
                 url = resp.url;
               }
               function getCmsBase(){
+                if (typeof window.qlopyCmsBase === 'string') return window.qlopyCmsBase;   // from config.php (admin/inc/header.php)
                 var parts = window.location.pathname.split('/');
                 var idx = parts.indexOf('admin');
                 if (idx > 0) { return '/' + parts.slice(1, idx).join('/'); }
@@ -76,13 +77,14 @@
                 var origin = window.location.origin || (window.location.protocol + '//' + window.location.host);
                 var cmsBase = getCmsBase();
                 if (/^https?:\/\//i.test(u)) return u;
-                if (u.indexOf('../uploads/') === 0) {
-                  return origin + cmsBase + '/uploads/' + u.replace('../uploads/','');
+                var ud = window.qlopyUploadsDir || 'uploads';
+                if (u.indexOf('../' + ud + '/') === 0) {
+                  return origin + cmsBase + '/' + ud + '/' + u.replace('../' + ud + '/','');
                 }
-                if (u.indexOf('/uploads/') === 0) {
+                if (u.indexOf('/' + ud + '/') === 0) {
                   return origin + cmsBase + u;
                 }
-                if (u.indexOf(cmsBase + '/uploads/') === 0) {
+                if (u.indexOf(cmsBase + '/' + ud + '/') === 0) {
                   return origin + u;
                 }
                 try { return new URL(u, origin + cmsBase + '/').toString(); } catch(e) { return u; }
@@ -121,7 +123,7 @@
                     try { window.__TINYMCE_UI_ACTIVE__ = false; } catch(e){}
                     if (!items) return;
                     var arr = Array.isArray(items) ? items : [items];
-                    var adminAjax = window.qlopyAdminAjax || '/admin/ajax.php';
+                    var adminAjax = window.qlopyAdminAjax || 'ajax.php';
                     // Ensure each item has a real file URL; if not, fetch details from server
                     var fetches = arr.map(function(it){
                       return new Promise(function(resolve){
@@ -150,7 +152,7 @@
                         } else if (url) {
                           ins += '[embed]'+ url +'[/embed]';
                         } else {
-                          var link = it.id ? (window.location.origin + '/admin/media.php?attachment=' + encodeURIComponent(it.id)) : '#';
+                          var link = it.id ? ((window.qlopyAdminUrl || '') + 'media.php?attachment=' + encodeURIComponent(it.id)) : '#';
                           ins += '<a href="'+ link +'">'+ (title || 'Download file') +'</a>';
                         }
                       });
@@ -180,7 +182,7 @@
                   try { window.__TINYMCE_UI_ACTIVE__ = false; } catch(e){}
                   if (!items) return;
                   var arr = Array.isArray(items) ? items : [items];
-                  var adminAjax = window.qlopyAdminAjax || '/admin/ajax.php';
+                  var adminAjax = window.qlopyAdminAjax || 'ajax.php';
                   var fetches = arr.map(function(it){
                     return new Promise(function(resolve){
                       if (it && it.url && it.url !== '') return resolve(it);
@@ -208,7 +210,7 @@
                       } else if (url) {
                         ins += '[embed]'+ url +'[/embed]';
                       } else {
-                        var link = it.id ? (window.location.origin + '/admin/media.php?attachment=' + encodeURIComponent(it.id)) : '#';
+                        var link = it.id ? ((window.qlopyAdminUrl || '') + 'media.php?attachment=' + encodeURIComponent(it.id)) : '#';
                         ins += '<a href="'+ link +'">'+ (title || 'Download file') +'</a>';
                       }
                     });
@@ -287,11 +289,11 @@
           });
       }
 
-      // QPMeta/metabox editors without blocks dropdown
+      // QPMeta/metabox editors (with the blocks dropdown, like the main editor)
       $('textarea.qpmeta-richtext, .qpmeta-richtext textarea').each(function(){
         var $ta = $(this);
         initTinyOnTextarea($ta, {
-          toolbar: 'bold italic underline | alignleft aligncenter alignright | bullist numlist | link addmedia | code'
+          toolbar: 'blocks | bold italic underline | alignleft aligncenter alignright | bullist numlist | link addmedia | code'
         });
       });
 
@@ -302,7 +304,7 @@
           ($ctx.length ? $ctx : $(document)).find('textarea.qpmeta-richtext, .qpmeta-richtext textarea').each(function(){
             var $ta = $(this);
             initTinyOnTextarea($ta, {
-              toolbar: 'bold italic underline | alignleft aligncenter alignright | bullist numlist | link addmedia | code'
+              toolbar: 'blocks | bold italic underline | alignleft aligncenter alignright | bullist numlist | link addmedia | code'
             });
           });
         } catch(e) {}

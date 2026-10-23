@@ -4,6 +4,9 @@ if (!defined('QLOPY_INIT')) { http_response_code(403); exit; }
 // Minimal cron core: lightweight hooks + scheduling helpers
 if (!defined('QP_CRON_CORE_INCLUDED')) define('QP_CRON_CORE_INCLUDED', true);
 
+// Next-due value, state and heavy-hook list (also needed by the CLI runner, which does not load auth.php)
+require_once __DIR__ . '/qp-cron-due.php';
+
 function &qp_cron_hook_registry(): array { static $r = []; return $r; }
 
 function add_qp_cron_action(string $hook, callable $cb) {
@@ -130,8 +133,8 @@ function qp_get_scheduled_events(): array {
     return [];
 }
 
-function qp_run_due_events(int $limit = 50): array {
-    if (file_exists(__DIR__ . '/qp-cron-queue.php')) { require_once __DIR__ . '/qp-cron-queue.php'; return qp_process_queue($limit); }
+function qp_run_due_events(int $limit = 50, bool $light_only = false): array {
+    if (file_exists(__DIR__ . '/qp-cron-queue.php')) { require_once __DIR__ . '/qp-cron-queue.php'; return qp_process_queue($limit, $light_only); }
     return ['processed'=>[], 'errors'=>[]];
 }
 
@@ -156,26 +159,72 @@ function qp_process_scheduled_posts(int $limit = 50): array {
         foreach ($rows as $id) {
             try {
                 $upd->execute([$id]);
-                // Fire hook for post publish if available
-                if (function_exists('do_action')) do_action('qp_post_published', ['post_id' => (int)$id]);
-                // Ensure cron log helper is available and record the publish so admin logs show it
-                if (!function_exists('qp_cron_log') && file_exists(__DIR__ . '/qp-cron-queue.php')) {
-                    require_once __DIR__ . '/qp-cron-queue.php';
-                }
-                if (function_exists('qp_cron_log')) {
-                    // task_id is null for scheduled-post publishes; include post_id in message
-                    qp_cron_log(null, 'qp_post_published', 'success', json_encode(['post_id' => (int)$id]));
-                }
                 $published[] = (int)$id;
             } catch (Exception $e) {
                 $errors[] = "Failed to publish {$id}: " . $e->getMessage();
             }
         }
         $pdo->commit();
+        // Hooks run after the commit so a listener (page cache purge, mail) sees the post as published.
+        if (!function_exists('qp_cron_log') && file_exists(__DIR__ . '/qp-cron-queue.php')) {
+            require_once __DIR__ . '/qp-cron-queue.php';
+        }
+        foreach ($published as $id) {
+            try {
+                if (function_exists('do_action')) do_action('qp_post_published', ['post_id' => (int)$id]);
+                // task_id is null for scheduled-post publishes; include post_id in message
+                if (function_exists('qp_cron_log')) qp_cron_log(null, 'qp_post_published', 'success', json_encode(['post_id' => (int)$id]));
+            } catch (Throwable $e) {
+                $errors[] = "Hook failed for {$id}: " . $e->getMessage();
+            }
+        }
     } catch (Exception $e) {
         try { $pdo->rollBack(); } catch (Exception $_) {}
         $errors[] = $e->getMessage();
     }
 
     return ['published'=>$published, 'errors'=>$errors];
+}
+
+
+/**
+ * One scheduler tick: due queue tasks, scheduled posts, then the mail queue, within a time and count budget.
+ * The CLI runner (qp-cron.php), the built-in worker and the external ping all call this one function so they cannot drift.
+ *
+ * $budget keys: seconds (stop starting new stages after this; default 25), tasks (10), posts (50), mail (50),
+ * light_only (skip heavy hooks, see qp_cron_heavy_hooks(); the built-in worker sets it, a real crontab does not).
+ * Each stage is isolated: an exception in one stage is reported and the next stage still runs.
+ * Returns ['queue' => [...], 'posts' => [...], 'mail' => [...]|null, 'errors' => string[], 'stopped_early' => bool, 'seconds' => float].
+ */
+function qp_cron_tick(array $budget = []): array {
+    $b = $budget + ['seconds' => 25, 'tasks' => 10, 'posts' => 50, 'mail' => 50];
+    $start = microtime(true);
+    $out = ['queue' => ['processed' => [], 'errors' => []], 'posts' => ['published' => [], 'errors' => []], 'mail' => null, 'errors' => [], 'stopped_early' => false, 'seconds' => 0.0];
+    $expired = function () use ($b, $start) { return (microtime(true) - $start) >= $b['seconds']; };
+
+    try {
+        $out['queue'] = qp_run_due_events((int)$b['tasks'], !empty($b['light_only']));
+    } catch (Throwable $e) { $out['errors'][] = 'queue: ' . $e->getMessage(); }
+
+    if ($expired()) { $out['stopped_early'] = true; $out['seconds'] = round(microtime(true) - $start, 3); $out['next_due'] = qp_cron_recompute_next_due(); return $out; }
+    try {
+        $out['posts'] = qp_process_scheduled_posts((int)$b['posts']);
+    } catch (Throwable $e) { $out['errors'][] = 'posts: ' . $e->getMessage(); }
+
+    if ($expired()) { $out['stopped_early'] = true; $out['seconds'] = round(microtime(true) - $start, 3); $out['next_due'] = qp_cron_recompute_next_due(); return $out; }
+    try {
+        $mail = dirname(__DIR__) . '/includes/qp-mail.php';
+        if (is_file($mail)) {
+            require_once $mail;
+            if (function_exists('qp_mail_process_queue')) {
+                $ms = function_exists('get_option_meta') ? get_option_meta('qp_mail_settings') : [];
+                $maxAttempts = intval((is_array($ms) ? ($ms['queue_max_attempts'] ?? 5) : 5));
+                $out['mail'] = qp_mail_process_queue((int)$b['mail'], $maxAttempts, null);
+            }
+        }
+    } catch (Throwable $e) { $out['errors'][] = 'mail: ' . $e->getMessage(); }
+
+    $out['seconds'] = round(microtime(true) - $start, 3);
+    $out['next_due'] = qp_cron_recompute_next_due();
+    return $out;
 }

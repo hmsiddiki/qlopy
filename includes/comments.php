@@ -158,33 +158,110 @@ if (!function_exists('comment_insert')) {
                 if ($cnt > 0) $status = 'approved';
             } catch (Throwable $_e) { }
         }
+        // Extension point: plugins may veto or adjust a comment after core's own validation and moderation have run.
+        // Filter `comment_pre_insert` receives the row about to be stored (object_type, object_id, parent_id, content, author_name,
+        // author_email, user_id, status, ip_address, user_agent) and the original input. Return the row (changed or not), or an array
+        // with an `error` key (a short code, like core's own 'closed' or 'missing_fields') to refuse the comment.
+        $row = [
+            'object_type' => $object_type, 'object_id' => $object_id, 'parent_id' => $parent_id, 'content' => $content,
+            'author_name' => $author_name, 'author_email' => $author_email, 'user_id' => $user_id, 'status' => $status,
+            'ip_address' => $ip, 'user_agent' => $ua,
+        ];
+        if (function_exists('apply_filters')) {
+            $filtered = apply_filters('comment_pre_insert', $row, $data);
+            if (is_array($filtered)) {
+                if (isset($filtered['error'])) return ['error' => (string)$filtered['error'], 'message' => $filtered['message'] ?? null];
+                // Only known columns, and only a valid status, are taken from the filter.
+                foreach ($row as $col => $_v) { if (array_key_exists($col, $filtered)) $row[$col] = $filtered[$col]; }
+                if (!in_array($row['status'], ['approved', 'pending', 'spam', 'trash'], true)) $row['status'] = $status;
+            }
+        }
         try {
             $stmt = $pdo->prepare('INSERT INTO ' . table_name('comments') . ' (object_type, object_id, parent_id, content, author_name, author_email, user_id, status, ip_address, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())');
-            $stmt->execute([$object_type, $object_id, $parent_id, $content, $author_name, $author_email, $user_id, $status, $ip, $ua]);
-            return (int)$pdo->lastInsertId();
+            $stmt->execute([$row['object_type'], (int)$row['object_id'], $row['parent_id'], $row['content'], $row['author_name'], $row['author_email'], $row['user_id'], $row['status'], $row['ip_address'], $row['user_agent']]);
+            $new_id = (int)$pdo->lastInsertId();
+            // Action `comment_inserted` ($id, $row): after the comment is stored (comment meta can be written here).
+            if (function_exists('do_action')) {
+                try { do_action('comment_inserted', $new_id, $row); } catch (Throwable $_e) { /* a listener never undoes a stored comment */ }
+            }
+            return $new_id;
         } catch (Throwable $e) {
             return ['error' => 'db_error', 'message' => $e->getMessage()];
         }
     }
 }
 
-// Comment meta helpers (fallback to option-meta when no dedicated table present)
+// Comment meta helpers. Values live in the `comment_meta` table (comment_id, meta_key, meta_value) so they can be queried and
+// aggregated (for example an average rating). Arrays and objects are stored as JSON with a "json:" prefix. Values saved by older
+// versions in the `comment_meta_<id>` site option are still read when the table has no row for the key.
+if (!function_exists('comment_meta_encode')) {
+    function comment_meta_encode($value): string {
+        if (is_bool($value)) return $value ? '1' : '0';
+        if (is_scalar($value) || $value === null) return (string)$value;
+        return 'json:' . json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    function comment_meta_decode($raw) {
+        if (is_string($raw) && strncmp($raw, 'json:', 5) === 0) {
+            $d = json_decode(substr($raw, 5), true);
+            return $d === null ? $raw : $d;
+        }
+        return $raw;
+    }
+    /** Runs a statement on comment_meta; creates the table once if it is missing (older installs) and retries. */
+    function comment_meta_run(string $sql, array $params) {
+        $pdo = db();
+        try {
+            $st = $pdo->prepare($sql);
+            $st->execute($params);
+            return $st;
+        } catch (Throwable $e) {
+            try {
+                $pdo->exec('CREATE TABLE IF NOT EXISTS ' . table_name('comment_meta') . ' (id INT AUTO_INCREMENT PRIMARY KEY, comment_id INT NOT NULL, meta_key VARCHAR(100) NOT NULL, meta_value TEXT, UNIQUE KEY comment_meta_unique (comment_id, meta_key))');
+                $st = $pdo->prepare($sql);
+                $st->execute($params);
+                return $st;
+            } catch (Throwable $_e) {
+                return null;
+            }
+        }
+    }
+}
+
 if (!function_exists('get_comment_meta')) {
+    /** One value (null when missing), or with no key every value of the comment as key => value. */
     function get_comment_meta(int $comment_id, string $key = null) {
-        if (!function_exists('get_option_meta')) return null;
-        $opt = get_option_meta('comment_meta_' . (int)$comment_id) ?? [];
-        if ($key === null) return $opt;
-        return $opt[$key] ?? null;
+        $out = [];
+        if ($key !== null) {
+            $st = comment_meta_run('SELECT meta_value FROM ' . table_name('comment_meta') . ' WHERE comment_id = ? AND meta_key = ? LIMIT 1', [$comment_id, $key]);
+            $row = $st ? $st->fetch(PDO::FETCH_NUM) : false;
+            if ($row !== false) return comment_meta_decode($row[0]);
+        } else {
+            $st = comment_meta_run('SELECT meta_key, meta_value FROM ' . table_name('comment_meta') . ' WHERE comment_id = ?', [$comment_id]);
+            if ($st) foreach ($st->fetchAll(PDO::FETCH_NUM) as $r) $out[$r[0]] = comment_meta_decode($r[1]);
+        }
+        // values saved by older versions as an option
+        $legacy = function_exists('get_option_meta') ? (get_option_meta('comment_meta_' . $comment_id) ?? []) : [];
+        if (!is_array($legacy)) $legacy = [];
+        if ($key !== null) return $legacy[$key] ?? null;
+        return $out + $legacy;
     }
 }
 
 if (!function_exists('update_comment_meta')) {
     function update_comment_meta(int $comment_id, string $key, $value): bool {
-        if (!function_exists('get_option_meta') || !function_exists('update_option_meta')) return false;
-        $opt = get_option_meta('comment_meta_' . (int)$comment_id) ?? [];
-        $opt[$key] = $value;
-        update_option_meta('comment_meta_' . (int)$comment_id, $opt);
-        return true;
+        if ($comment_id <= 0 || $key === '' || strlen($key) > 100) return false;
+        $st = comment_meta_run('INSERT INTO ' . table_name('comment_meta') . ' (comment_id, meta_key, meta_value) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)', [$comment_id, $key, comment_meta_encode($value)]);
+        return $st !== null;
+    }
+}
+
+if (!function_exists('delete_comment_meta')) {
+    /** Deletes one key, or every key of the comment when $key is null. */
+    function delete_comment_meta(int $comment_id, string $key = null): bool {
+        $st = $key === null
+            ? comment_meta_run('DELETE FROM ' . table_name('comment_meta') . ' WHERE comment_id = ?', [$comment_id])
+            : comment_meta_run('DELETE FROM ' . table_name('comment_meta') . ' WHERE comment_id = ? AND meta_key = ?', [$comment_id, $key]);
+        return $st !== null;
     }
 }
 
@@ -235,9 +312,21 @@ if (!function_exists('comment_update_status')) {
     function comment_update_status(int $id, string $status, $by_user = null) {
         $pdo = db();
         try {
+            $old = null;
+            if (function_exists('do_action')) {
+                $os = $pdo->prepare('SELECT * FROM ' . table_name('comments') . ' WHERE id = ? LIMIT 1');
+                $os->execute([$id]);
+                $old = $os->fetch(PDO::FETCH_ASSOC) ?: null;
+            }
             $stmt = $pdo->prepare('UPDATE ' . table_name('comments') . ' SET status = ? WHERE id = ?');
             $stmt->execute([$status, $id]);
-            return $stmt->rowCount() > 0;
+            $changed = $stmt->rowCount() > 0;
+            // Action `comment_status_changed` ($id, $new_status, $old_status, $comment_row_before): lets plugins refresh anything
+            // derived from approved comments (for example a product's average rating).
+            if ($changed && $old && function_exists('do_action')) {
+                try { do_action('comment_status_changed', $id, $status, (string)$old['status'], $old); } catch (Throwable $_e) { /* never undoes the change */ }
+            }
+            return $changed;
         } catch (Throwable $e) {
             return false;
         }
@@ -248,9 +337,20 @@ if (!function_exists('comment_delete')) {
     function comment_delete(int $id) {
         $pdo = db();
         try {
+            $os = $pdo->prepare('SELECT * FROM ' . table_name('comments') . ' WHERE id = ? LIMIT 1');
+            $os->execute([$id]);
+            $old = $os->fetch(PDO::FETCH_ASSOC) ?: null;
             $stmt = $pdo->prepare('DELETE FROM ' . table_name('comments') . ' WHERE id = ?');
             $stmt->execute([$id]);
-            return $stmt->rowCount() > 0;
+            $deleted = $stmt->rowCount() > 0;
+            if ($deleted) {
+                delete_comment_meta($id);
+                // Action `comment_deleted` ($id, $comment_row): after the comment and its meta are gone.
+                if ($old && function_exists('do_action')) {
+                    try { do_action('comment_deleted', $id, $old); } catch (Throwable $_e) { /* never undoes the delete */ }
+                }
+            }
+            return $deleted;
         } catch (Throwable $e) { return false; }
     }
 }
@@ -370,7 +470,7 @@ if (!function_exists('comments_template')) {
             $tpl = $theme_dir . 'comments.php';
         } else {
             // Fallback: look in default theme folder relative to content path
-            $possible = __DIR__ . '/../content/themes/default/comments.php';
+            $possible = qp_themes_path('default') . 'comments.php';
             if (file_exists($possible)) $tpl = $possible;
         }
         if ($tpl) include $tpl;

@@ -187,8 +187,8 @@ if (function_exists('get_role_capabilities') && function_exists('assign_capabili
         if (!$current_avatar_url) {
             $legacy = get_user_meta($user_id, 'avatar');
             if (!empty($legacy)) {
-                if (strpos($legacy, '/uploads') === 0 || strpos($legacy, 'uploads/') === 0) {
-                    if (function_exists('qp_uploads_url_base')) $current_avatar_url = rtrim(qp_uploads_url_base(), '/') . '/' . ltrim(str_replace('uploads/', '', $legacy), '/');
+                if (function_exists('qp_uploads_relative') && function_exists('qp_uploads_url_base') && ($legacyRel = qp_uploads_relative($legacy)) !== null) {
+                    $current_avatar_url = rtrim(qp_uploads_url_base(), '/') . '/' . ltrim($legacyRel, '/');
                 } else {
                     $current_avatar_url = $legacy;
                 }
@@ -324,7 +324,7 @@ if (function_exists('get_role_capabilities') && function_exists('assign_capabili
                         if (Array.isArray(item)) { id = item.length ? item[0].id : null; url = item.length ? item[0].url : null; }
                         else { id = item.id || item; url = item.url || null; }
                         if (!url && id) {
-                            var adminAjax = window.qlopyAdminAjax || '/admin/ajax.php';
+                            var adminAjax = window.qlopyAdminAjax || 'ajax.php';
                             $.post(adminAjax, { action: 'qp_media_batch_get', ids: String(id) }, function(resp){
                                 if (resp && resp.status === 'success' && resp.items && resp.items.length) {
                                     var it = resp.items[0]; var thumb = it.thumb || it.url || '';

@@ -60,7 +60,12 @@ if (!$user) {
                 }
             } catch (Throwable $_) { /* best-effort: do not block login on scheduler errors */ }
 
-            header('Location: index.php'); // Redirect to admin dashboard
+            // Back to where the visitor came from, but only to this site's admin screens or the OAuth consent page (never an arbitrary address).
+            $rt = (string)($_GET['redirect_to'] ?? '');
+            $siteBase = rtrim((string)get_config()['site_url'], '/');
+            $okTarget = $rt !== '' && strncmp($rt, $siteBase . '/', strlen($siteBase) + 1) === 0 && !preg_match('/[\r\n]/', $rt)
+                && (strncmp($rt, $siteBase . '/api/qlopy/oauth/', strlen($siteBase . '/api/qlopy/oauth/')) === 0 || strncmp($rt, $siteBase . '/' . (get_config()['admin_dir'] ?? 'admin') . '/', strlen($siteBase . '/' . (get_config()['admin_dir'] ?? 'admin') . '/')) === 0);
+            header('Location: ' . ($okTarget ? $rt : 'index.php'));
             exit;
         } else {
             $error = 'Invalid username or password.';

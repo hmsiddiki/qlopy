@@ -30,6 +30,11 @@ if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_NONE) {
 }
 // Mark admin context so cron scheduling and other admin-only helpers permit actions
 if (!defined('IN_ADMIN')) define('IN_ADMIN', true);
+// Page cache safety net: any admin request that changes something (a POST: saving a post, a setting, a plugin's screen) purges the
+// cache when the request ends, whatever it touched. Only while the cache is on.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && function_exists('qp_page_cache_purge_all')) {
+    register_shutdown_function('qp_page_cache_purge_all');
+}
 require_once __DIR__ . '/../includes/assets.php';
 // Load screens helper early so functions like current_admin_screen() are available
 require_once __DIR__ . '/inc/screens.php';
@@ -227,6 +232,8 @@ if (function_exists('register_menu_location')) {
     register_menu_location('primary', 'Primary Menu');
 }
 require_once __DIR__ . '/../includes/admin-menus.php';
+// Admin widget registry and the AJAX handlers behind the Dashboard and Appearance > Widgets (C6)
+require_once __DIR__ . '/../includes/admin-widgets.php';
 
 // by hooking `admin_enqueue_{screen_id}` via `add_admin_action()`.
 // require_once __DIR__ . '/inc/screens.php'; // moved down after plugin/theme includes
@@ -808,6 +815,14 @@ add_admin_action('iitcm_admin_ajax_get_terms_list', function($req){
     echo json_encode(['status'=>'success','terms'=>$items]);
     exit;
 }, 10, 1);
+
+// SEO box in the editor (per-page title, description, robots, canonical, sharing image) while Settings > SEO is on
+add_admin_action('init', function() {
+    if (function_exists('get_option_meta') && filter_var(get_option_meta('qp_seo_enabled'), FILTER_VALIDATE_BOOLEAN)) {
+        require_once __DIR__ . '/../includes/seo.php';
+        qp_seo_register_metabox();
+    }
+});
 
 // Register Post Tags metabox for Posts (post_type = post)
 add_admin_action('init', function() {

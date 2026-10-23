@@ -28,12 +28,8 @@ function qlopy_updates_root()
     // Prefer site uploads helper or config values when available
     if (function_exists('qp_uploads_base')) {
         $base = rtrim(qp_uploads_base(), DIRECTORY_SEPARATOR);
-    } elseif (!empty($GLOBALS['config']['uploads_dir'])) {
-        $base = rtrim($GLOBALS['config']['uploads_dir'], DIRECTORY_SEPARATOR);
-    } elseif (!empty($GLOBALS['config']['upload_dir'])) {
-        $base = rtrim($GLOBALS['config']['upload_dir'], DIRECTORY_SEPARATOR);
     } else {
-        $base = qlopy_project_root() . DIRECTORY_SEPARATOR . 'uploads';
+        $base = qlopy_project_root() . DIRECTORY_SEPARATOR . (function_exists('qp_uploads_dirname') ? qp_uploads_dirname() : 'uploads');
     }
     $path = $base . DIRECTORY_SEPARATOR . 'updates';
     if (!is_dir($path)) {
@@ -167,9 +163,10 @@ function central_init_update()
     // Discover theme and plugin updaters by scanning dynamic content directories
     $project = qlopy_project_root();
     // Try to get dynamic content dir names from config constants if available
-    $content = defined('QLOPY_CONTENT_DIR') ? QLOPY_CONTENT_DIR : (defined('CONTENT_DIR') ? CONTENT_DIR : 'content');
-    $themes = defined('QLOPY_THEMES_DIR') ? QLOPY_THEMES_DIR : (defined('THEMES_DIR') ? THEMES_DIR : 'themes');
-    $plugins = defined('QLOPY_PLUGINS_DIR') ? QLOPY_PLUGINS_DIR : (defined('PLUGINS_DIR') ? PLUGINS_DIR : 'plugins');
+    // (the constants QLOPY_CONTENT_DIR and friends were never defined anywhere, so this always used the defaults; the folder names come from config.php)
+    $content = qp_content_dir();
+    $themes = qp_themes_dir();
+    $plugins = qp_plugins_dir();
 
     // scan themes
     $themeRoot = $project . DIRECTORY_SEPARATOR . $content . DIRECTORY_SEPARATOR . $themes;
@@ -847,8 +844,148 @@ function central_update_initiator()
     return $scheduled;
 }
 
-// Minimal updater runner: this is invoked by qp-cron queue hook 'qlopy_do_update'
+// ---------------------------------------------------------------- folder mapping, cleanup and failure reporting (core upgrade plan: updater)
+
+/** The folder names of this site (config.php): admin, content, themes, plugins, uploads. */
+function qlopy_site_dir_names(): array
+{
+    return [
+        'admin' => function_exists('qp_admin_dir') ? qp_admin_dir() : 'admin',
+        'content' => function_exists('qp_content_dir') ? qp_content_dir() : 'content',
+        'themes' => function_exists('qp_themes_dir') ? qp_themes_dir() : 'themes',
+        'plugins' => function_exists('qp_plugins_dir') ? qp_plugins_dir() : 'plugins',
+        'uploads' => function_exists('qp_uploads_dirname') ? qp_uploads_dirname() : 'uploads',
+    ];
+}
+
+/**
+ * Where a path of the core package goes on THIS site. The package is built with the default folder names; a site that renamed
+ * them (config.php) gets admin/ -> admin_dir, uploads/ -> uploads_dir, content/themes -> content_dir/themes_dir,
+ * content/plugins -> content_dir/plugins_dir and anything else under content/ -> content_dir/.
+ */
+function qlopy_map_core_path(string $rel, ?array $names = null): string
+{
+    $n = $names ?? qlopy_site_dir_names();
+    $parts = explode('/', ltrim(str_replace('\\', '/', $rel), '/'));
+    if ($parts[0] === 'admin') {
+        $parts[0] = $n['admin'];
+    } elseif ($parts[0] === 'uploads') {
+        $parts[0] = $n['uploads'];
+    } elseif ($parts[0] === 'content') {
+        if (($parts[1] ?? '') === 'themes') array_splice($parts, 0, 2, [$n['content'], $n['themes']]);
+        elseif (($parts[1] ?? '') === 'plugins') array_splice($parts, 0, 2, [$n['content'], $n['plugins']]);
+        else $parts[0] = $n['content'];
+    }
+    return implode('/', $parts);
+}
+
+/** Rebuild the extracted core package with the site's folder names. Returns the new source folder (or $source when nothing differs). */
+function qlopy_map_core_source(string $source, ?array $names = null): string
+{
+    $n = $names ?? qlopy_site_dir_names();
+    if ($n === ['admin' => 'admin', 'content' => 'content', 'themes' => 'themes', 'plugins' => 'plugins', 'uploads' => 'uploads']) return $source;
+    $stage = rtrim($source, '/\\') . '__mapped';
+    @mkdir($stage, 0755, true);
+    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($source, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::LEAVES_ONLY);
+    $slen = strlen(rtrim($source, '/\\')) + 1;
+    foreach ($it as $f) {
+        if (!$f->isFile()) continue;
+        $rel = str_replace('\\', '/', substr($f->getPathname(), $slen));
+        $dest = $stage . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, qlopy_map_core_path($rel, $n));
+        $dir = dirname($dest);
+        if (!is_dir($dir)) @mkdir($dir, 0755, true);
+        if (!@rename($f->getPathname(), $dest)) @copy($f->getPathname(), $dest);
+    }
+    return $stage;
+}
+
+/** A zip built on Windows can store names like "admin\index.php"; where the extractor keeps those literally, turn them into folders. */
+function qlopy_normalize_extracted(string $dir): void
+{
+    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::LEAVES_ONLY);
+    $fix = [];
+    foreach ($it as $f) if ($f->isFile() && strpos($f->getFilename(), '\\') !== false) $fix[] = $f->getPathname();
+    foreach ($fix as $path) {
+        $base = dirname($path);
+        $rel = str_replace('\\', '/', basename($path));
+        $dest = $base . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
+        $d = dirname($dest);
+        if (!is_dir($d)) @mkdir($d, 0755, true);
+        @rename($path, $dest);
+    }
+}
+
+function qlopy_rrmdir(string $dir): void
+{
+    if (!is_dir($dir)) return;
+    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+    foreach ($it as $f) { if ($f->isDir() && !$f->isLink()) @rmdir($f->getPathname()); else @unlink($f->getPathname()); }
+    @rmdir($dir);
+}
+
+/** What an error code from the updater means, in plain words. */
+function qlopy_update_error_text(string $code): string
+{
+    $t = [
+        'download_failed' => 'The update package could not be downloaded. Check that the package address in the update manifest really exists on the update server.',
+        'sha_mismatch' => 'The downloaded package does not match the SHA-256 in the manifest. Rebuild the package and republish both the zip and the manifest.',
+        'sig_failed' => 'The manifest signature did not verify.',
+        'sig_key_missing' => 'The manifest is signed but no trusted public key was found, and this site requires signed manifests.',
+        'sig_required' => 'This site requires signed manifests and this one is not signed.',
+        'zip_open' => 'The downloaded file is not a readable zip.',
+        'zip_extract' => 'The package could not be unpacked (disk space or permissions).',
+        'no_manifest' => 'No manifest was given to the update task.',
+        'no_package_url' => 'The manifest has no package address.',
+        'unknown_type' => 'The manifest type is not core, theme or plugin.',
+        'php_migration_failed' => 'The migration script failed; the files were restored from the backup.',
+        'migration_failed' => 'The database migration failed; the files were restored from the backup.',
+    ];
+    return $t[$code] ?? 'The update did not complete.';
+}
+
+/**
+ * The queue task for an update. It runs the update and, when the update reports an error, throws, so the task shows as failed (with
+ * the reason) on Settings > Cron instead of "done". The last failure is also kept in the option qlopy_last_update_failure for the
+ * notice on Settings > Updates and the Dashboard; this is a single small record, not the step-by-step log (that stays off until
+ * "Enable logging" is switched on).
+ */
+function qlopy_do_update_task($args = [])
+{
+    $res = qlopy_do_update_action($args);
+    $a = is_array($args) && array_keys($args) === range(0, count($args) - 1) ? ($args[0] ?? []) : (is_array($args) ? $args : []);
+    if (is_array($res) && isset($res['error'])) {
+        $code = (string)$res['error'];
+        $detail = isset($res['message']) ? (string)$res['message'] : (isset($res['details']) ? json_encode($res['details']) : '');
+        if (function_exists('update_option_meta')) {
+            update_option_meta('qlopy_last_update_failure', [
+                'time' => time(), 'type' => (string)($a['type'] ?? ''), 'folder' => (string)($a['folder'] ?? ''),
+                'version' => (string)($a['manifest']['version'] ?? ''), 'code' => $code, 'text' => qlopy_update_error_text($code), 'detail' => mb_substr($detail, 0, 500),
+            ]);
+        }
+        throw new RuntimeException('Update failed: ' . $code . ' - ' . qlopy_update_error_text($code) . ($detail !== '' ? ' (' . mb_substr($detail, 0, 200) . ')' : ''));
+    }
+    if (is_array($res) && !empty($res['success']) && function_exists('update_option_meta')) update_option_meta('qlopy_last_update_failure', null);
+    return $res;
+}
+
+/** Runs one update and always removes its temporary download folder (also folders older than an hour that earlier runs left behind). */
 function qlopy_do_update_action($args = [])
+{
+    $GLOBALS['qlopy_update_tmpdir'] = null;
+    try {
+        return qlopy_do_update_action_inner($args);
+    } finally {
+        $t = $GLOBALS['qlopy_update_tmpdir'] ?? null;
+        if (is_string($t) && $t !== '') qlopy_rrmdir($t);
+        $root = qlopy_updates_tmp_dir();
+        foreach (@glob($root . DIRECTORY_SEPARATOR . 'pkg_*', GLOB_ONLYDIR) ?: [] as $old) {
+            if (@filemtime($old) !== false && filemtime($old) < time() - 3600) qlopy_rrmdir($old);
+        }
+    }
+}
+
+// Minimal updater runner: this is invoked by qp-cron queue hook 'qlopy_do_update' (through qlopy_do_update_task)
+function qlopy_do_update_action_inner($args = [])
 {
     // Accept $args either as array or list; normalize
     if (is_array($args) && array_keys($args) === range(0, count($args)-1)) {
@@ -870,6 +1007,7 @@ function qlopy_do_update_action($args = [])
 
     $tmpDir = qlopy_updates_tmp_dir() . DIRECTORY_SEPARATOR . uniqid('pkg_', true);
     @mkdir($tmpDir, 0755, true);
+    $GLOBALS['qlopy_update_tmpdir'] = $tmpDir;   // removed by qlopy_do_update_action() whatever happens
     $pkgPath = $tmpDir . DIRECTORY_SEPARATOR . basename(parse_url($pkgUrl, PHP_URL_PATH) ?: 'package.zip');
     // download
     if (!qlopy_download_file($pkgUrl, $pkgPath)) { qlopy_updater_log('Download failed: ' . $pkgUrl); return ['error'=>'download_failed']; }
@@ -904,6 +1042,7 @@ function qlopy_do_update_action($args = [])
     $extractTo = $tmpDir . DIRECTORY_SEPARATOR . 'extracted'; @mkdir($extractTo, 0755, true);
     if (!$zip->extractTo($extractTo)) { qlopy_updater_log('Zip extract failed'); $zip->close(); return ['error'=>'zip_extract']; }
     $zip->close();
+    qlopy_normalize_extracted($extractTo);
 
     // Determine target path based on type
     $projectRoot = qlopy_project_root();
@@ -911,12 +1050,12 @@ function qlopy_do_update_action($args = [])
         $target = $projectRoot;
     } elseif ($type === 'theme') {
         // try to read dynamic content dir from config if defined, fallback to content/themes
-        $content = defined('QLOPY_CONTENT_DIR') ? QLOPY_CONTENT_DIR : 'content';
-        $themes = defined('QLOPY_THEMES_DIR') ? QLOPY_THEMES_DIR : 'themes';
+        $content = qp_content_dir();
+        $themes = qp_themes_dir();
         $target = $projectRoot . DIRECTORY_SEPARATOR . $content . DIRECTORY_SEPARATOR . $themes . DIRECTORY_SEPARATOR . ($folder ?: '');
     } elseif ($type === 'plugin') {
-        $content = defined('QLOPY_CONTENT_DIR') ? QLOPY_CONTENT_DIR : 'content';
-        $plugins = defined('QLOPY_PLUGINS_DIR') ? QLOPY_PLUGINS_DIR : 'plugins';
+        $content = qp_content_dir();
+        $plugins = qp_plugins_dir();
         $target = $projectRoot . DIRECTORY_SEPARATOR . $content . DIRECTORY_SEPARATOR . $plugins . DIRECTORY_SEPARATOR . ($folder ?: '');
     } else {
         qlopy_updater_log('Unknown update type: ' . $type); return ['error'=>'unknown_type'];
@@ -984,38 +1123,13 @@ function qlopy_do_update_action($args = [])
             }
         }
     }
-    // Remap package `admin/` to the site's configured admin folder when applying core updates.
-    // This avoids creating a literal `admin/` folder when the site uses a custom admin directory name.
+    // Core packages are built with the default folder names. Map them to this site's config.php names: admin/ -> admin_dir,
+    // uploads/ -> uploads_dir, content/themes -> content_dir/themes_dir, content/plugins -> content_dir/plugins_dir, other content/ -> content_dir.
+    // The whitelist paths are written in package terms too, so they are mapped the same way.
     if ($type === 'core') {
-        $siteAdmin = $GLOBALS['config']['admin_dir'] ?? ($GLOBALS['admin_dir'] ?? 'admin');
-        $siteAdmin = is_string($siteAdmin) ? trim($siteAdmin, "\\/ \t\n\r") : 'admin';
-        if ($siteAdmin === '') $siteAdmin = 'admin';
-        if (strcasecmp($siteAdmin, 'admin') !== 0) {
-            $pkgAdminPath = $source . DIRECTORY_SEPARATOR . 'admin';
-            $mappedPath = $source . DIRECTORY_SEPARATOR . $siteAdmin;
-            if (is_dir($pkgAdminPath)) {
-                // If mapped path already exists, merge contents; otherwise try rename for efficiency.
-                if (is_dir($mappedPath)) {
-                    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($pkgAdminPath, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST);
-                    $slen = strlen(rtrim($pkgAdminPath, DIRECTORY_SEPARATOR)) + 1;
-                    foreach ($it as $item) {
-                        $rel = substr($item->getPathname(), $slen);
-                        $rel = ltrim(str_replace('\\', '/', $rel), '/');
-                        $dst = $mappedPath . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
-                        if ($item->isDir()) { if (!is_dir($dst)) @mkdir($dst, 0755, true); }
-                        else { $dDir = dirname($dst); if (!is_dir($dDir)) @mkdir($dDir, 0755, true); @copy($item->getPathname(), $dst); }
-                    }
-                    // Remove original package admin dir (best-effort)
-                    $it2 = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($pkgAdminPath, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
-                    foreach ($it2 as $f) { if ($f->isDir()) @rmdir($f->getPathname()); else @unlink($f->getPathname()); }
-                    @rmdir($pkgAdminPath);
-                } else {
-                    @rename($pkgAdminPath, $mappedPath);
-                }
-            }
-        }
+        $source = qlopy_map_core_source($source);
+        $skip = array_map('qlopy_map_core_path', $skip);
     }
-
     qlopy_recursive_apply($source, $target, $skip);
 
     // Collect the list of files that were extracted/applied so we can do precise invalidation.
@@ -1167,7 +1281,7 @@ function qlopy_recursive_copy($src, $dst)
     $dstReal = str_replace('\\', '/', $dstReal);
     $projRoot = qlopy_project_root();
     $projRootNorm = str_replace('\\', '/', rtrim($projRoot, DIRECTORY_SEPARATOR));
-    $projUploadsNorm = $projRootNorm . '/uploads';
+    $projUploadsNorm = $projRootNorm . '/' . qp_uploads_dirname();
     $isCopyingProjectRoot = (strtolower($srcNorm) === strtolower($projRootNorm));
 
     // Use an iterator to walk the tree once and copy items; avoid per-item realpath calls
@@ -1492,7 +1606,7 @@ if (function_exists('add_admin_action')) {
 
 // register cron action hook so qp-cron can invoke the updater runner
 if (function_exists('add_qp_cron_action')) {
-    add_qp_cron_action('qlopy_do_update', 'qlopy_do_update_action');
+    add_qp_cron_action('qlopy_do_update', 'qlopy_do_update_task');
     // Register scheduler hooks for checker and initiator
     add_qp_cron_action('qlopy_update_checker', 'central_update_checker');
     // Also allow an explicit login-triggered one-time checker hook

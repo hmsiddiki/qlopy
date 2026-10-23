@@ -8,9 +8,9 @@ if (!function_exists('qp_default_avatar_url')) {
             $ds = get_option_meta('discussion_settings') ?? [];
             if (!empty($ds['default_avatar_path'])) {
                 $path = $ds['default_avatar_path'];
-                // if path begins with /uploads or uploads, make absolute URL
-                if (strpos($path, '/uploads') === 0 || strpos($path, 'uploads/') === 0) {
-                    if (function_exists('qp_uploads_url_base')) return rtrim(qp_uploads_url_base(), '/') . '/' . ltrim(str_replace('uploads/', '', $path), '/');
+                // if the path is in the uploads folder (the configured name, or the old literal one), make an absolute URL
+                if (function_exists('qp_uploads_relative') && function_exists('qp_uploads_url_base') && ($rel = qp_uploads_relative($path)) !== null) {
+                    return rtrim(qp_uploads_url_base(), '/') . '/' . ltrim($rel, '/');
                 }
             }
         }
@@ -36,8 +36,8 @@ if (!function_exists('qp_user_avatar_url')) {
             $av = get_user_meta($user_id, 'avatar');
             if (!empty($av)) {
                 // if relative uploads path, build absolute
-                if (strpos($av, '/uploads') === 0 || strpos($av, 'uploads/') === 0) {
-                    if (function_exists('qp_uploads_url_base')) return rtrim(qp_uploads_url_base(), '/') . '/' . ltrim(str_replace('uploads/', '', $av), '/');
+                if (function_exists('qp_uploads_relative') && function_exists('qp_uploads_url_base') && ($rel = qp_uploads_relative($av)) !== null) {
+                    return rtrim(qp_uploads_url_base(), '/') . '/' . ltrim($rel, '/');
                 }
                 return $av;
             }

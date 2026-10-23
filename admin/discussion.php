@@ -74,8 +74,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_discussion'])) {
         $destName = 'default-avatar.' . $ext;
         $destPath = $destDir . DIRECTORY_SEPARATOR . $destName;
         if (move_uploaded_file($tmp, $destPath)) {
-          // store path relative to site root (uploads/<file>)
-          $s['default_avatar_path'] = '/uploads/' . $destName;
+          // store path relative to site root (<uploads folder>/<file>)
+          $s['default_avatar_path'] = '/' . qp_uploads_dirname() . '/' . $destName;
           qp_set_admin_notice('Default avatar uploaded');
         }
       } else {
@@ -280,7 +280,7 @@ jQuery(function($){
         if (Array.isArray(item)) { id = item.length ? item[0].id : null; url = item.length ? item[0].url : null; }
         else { id = item.id || item; url = item.url || null; }
         if (!url && id) {
-          var adminAjax = window.qlopyAdminAjax || '/admin/ajax.php';
+          var adminAjax = window.qlopyAdminAjax || 'ajax.php';
           $.post(adminAjax, { action: 'qp_media_batch_get', ids: String(id) }, function(resp){
             if (resp && resp.status === 'success' && resp.items && resp.items.length) {
               var it = resp.items[0]; var thumb = it.thumb || it.url || '';

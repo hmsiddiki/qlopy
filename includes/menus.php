@@ -2,8 +2,15 @@
 if (!defined('QLOPY_INIT')) { http_response_code(403); exit; }
 // Menu system using DB options storage (no file)
 
-function menus_load_all() {
+// One in-request cache shared by menus_load_all() and menus_save_all() (they used to hold separate statics, so a save
+// never refreshed what the next load returned).
+function &menus_cache_ref() {
     static $cache = null;
+    return $cache;
+}
+
+function menus_load_all() {
+    $cache = &menus_cache_ref();
     if ($cache !== null) return $cache;
     if (function_exists('get_option_meta')) {
         $stored = get_option_meta('menus_data');
@@ -44,13 +51,15 @@ function menus_save_all($data) {
         update_option_meta('menus_data', $data);
     }
     // Refresh in-request cache so subsequent menus_load_all() calls in this request see updated data
-    static $cache = null;
+    $cache = &menus_cache_ref();
     $cache = $data;
 }
 
 // API: register menu locations (theme)
 function register_menu_location($location_key, $label) {
     $all = menus_load_all();
+    // Themes call this on every request: do not rewrite the stored menus when nothing changed.
+    if (array_key_exists($location_key, $all['locations']) && $all['locations'][$location_key] === $label) return;
     $all['locations'][$location_key] = $label;
     menus_save_all($all);
 }
@@ -58,6 +67,7 @@ function register_menu_location($location_key, $label) {
 // API: assign a menu to a location
 function assign_menu_to_location($location_key, $menu_slug) {
     $all = menus_load_all();
+    if (array_key_exists($location_key, $all['locations_map']) && $all['locations_map'][$location_key] === $menu_slug) return;
     $all['locations_map'][$location_key] = $menu_slug; // derived map
     menus_save_all($all);
 }
@@ -65,7 +75,9 @@ function assign_menu_to_location($location_key, $menu_slug) {
 // API: create/update menu structure
 function set_menu_structure($menu_slug, $menu_label, $items) {
     $all = menus_load_all();
-    $all['menus'][$menu_slug] = [ 'label' => $menu_label, 'items' => $items ];
+    $new = [ 'label' => $menu_label, 'items' => $items ];
+    if (array_key_exists($menu_slug, $all['menus']) && $all['menus'][$menu_slug] === $new) return;
+    $all['menus'][$menu_slug] = $new;
     menus_save_all($all);
 }
 

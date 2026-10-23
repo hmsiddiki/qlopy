@@ -7,12 +7,8 @@ if (!$rel) { http_response_code(400); echo 'file required'; exit; }
 $uploadsDir = null;
 if (function_exists('qp_uploads_base')) {
 	$uploadsDir = qp_uploads_base();
-} elseif (!empty($GLOBALS['config']['uploads_dir'])) {
-	$uploadsDir = $GLOBALS['config']['uploads_dir'];
-} elseif (!empty($GLOBALS['config']['upload_dir'])) {
-	$uploadsDir = $GLOBALS['config']['upload_dir'];
 } else {
-	$uploadsDir = __DIR__ . '/../uploads';
+	$uploadsDir = __DIR__ . '/../' . qp_uploads_dirname();
 }
 $uploadsDir = rtrim($uploadsDir, '/\\');
 $base = realpath($uploadsDir);

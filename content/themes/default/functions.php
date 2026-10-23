@@ -5,7 +5,7 @@ Theme URI: https://example.com/default-theme
 Author: Your Name
 Author URI: https://example.com
 Description: Default theme for the site. Place theme metadata here in this header block.
-Version: 1.0
+Version: 1.2
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 */
@@ -13,14 +13,33 @@ License URI: https://opensource.org/licenses/MIT
 add_action('init', function() {
     $theme_url = THEME_URL;
 
-    enqueue_style('bootstrap', 'https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css');
-    enqueue_style('theme-style', $theme_url . '/css/style.css', ['bootstrap'], '1.0');
+    // Bootstrap and jQuery are bundled in vendor/ (content-hashed file names, so they can be cached for a year: nothing is loaded from
+    // another site). The hash is part of the name, so no ?ver= is added.
+    enqueue_style('bootstrap', $theme_url . '/vendor/bootstrap-4.5.2.5b0fbe5b7a.min.css', [], null);
+    enqueue_style('theme-style', $theme_url . '/css/style.css', ['bootstrap'], '1.2');
 
-    enqueue_script('jquery', 'https://code.jquery.com/jquery-3.5.1.min.js', [], '3.5.1', false);
-    enqueue_script('bootstrap', 'https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.bundle.min.js', ['jquery'], '4.5.2', true);
-    enqueue_script('theme-script', $theme_url . '/js/script.js', ['jquery'], '1.0', true);
-    // Comment reply helper (WP-like move-form behavior)
-    enqueue_script('comment-reply', $theme_url . '/js/comment-reply.js', ['jquery'], '1.0', true);
+    enqueue_script('jquery', $theme_url . '/vendor/jquery-3.5.1.f7f6a5894f.min.js', [], null, false);
+    enqueue_script('bootstrap', $theme_url . '/vendor/bootstrap-bundle-4.5.2.f67b782ec5.min.js', ['jquery'], null, true);
+    enqueue_script('theme-script', $theme_url . '/js/script.js', ['jquery'], '1.1', true);
+});
+
+// Widget area (core C6): an empty area prints nothing, so nothing changes until the owner places widgets under Appearance > Widgets.
+if (function_exists('register_widget_area')) {
+    register_widget_area('footer', [
+        'name' => 'Footer',
+        'description' => 'Shown in columns above the footer line on every page.',
+        'before_widget' => '<section id="%1$s" class="widget %2$s col-md-4 mb-4">',
+        'after_widget' => '</section>',
+        'before_title' => '<h5 class="widget-title">',
+        'after_title' => '</h5>',
+    ]);
+}
+
+// Comment reply helper (WP-like move-form behavior): only pages that can show comments need it.
+add_action('qp_init', function() {
+    if (function_exists('is_singular') && is_singular()) {
+        enqueue_script('comment-reply', THEME_URL . '/js/comment-reply.js', ['jquery'], '1.1', true);
+    }
 });
 
 // Theme: register a custom query var for the contact page and add a rewrite rule
@@ -34,9 +53,13 @@ add_action('init', function() {
         // also accept plain /contact
         add_rewrite_rule('^contact/?$', 'route=singular&post_type=page&slug=contact', 'top');
     }
-    // Try to refresh compiled rewrite cache so runtime registration is available
-    if (function_exists('flush_rewrite_rules')) {
-        try { flush_rewrite_rules(); } catch (Throwable $_e) { /* ignore */ }
+    // Refresh the compiled rewrite cache when this theme's rules change (not on every request: it queries the database and
+    // rewrites a file each time). Bump the version below when a rule above changes.
+    if (function_exists('flush_rewrite_rules') && function_exists('get_option_meta') && get_option_meta('default_theme_rewrite_v') !== '1.1') {
+        try {
+            flush_rewrite_rules();
+            if (function_exists('update_option_meta')) update_option_meta('default_theme_rewrite_v', '1.1');
+        } catch (Throwable $_e) { /* ignore */ }
     }
 });
 

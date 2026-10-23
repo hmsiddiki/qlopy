@@ -88,7 +88,7 @@ $tax_act = $_GET['action'] ?? 'list';
 $cr_tax_type = $_GET['taxonomy'] ?? '';
 $cr_tax_act = $cr_tax_type.'_'. $tax_act;
 $config = get_config();
-$admin_url = $config['site_url'] . ($config['admin_path'] ?? '/admin/');
+$admin_url = rtrim(qp_admin_url(), '/');
  $site_name = function_exists('get_option_meta') ? get_option_meta('site_name') : null; 
 ?>
 <div class="app-header fixed-top">
@@ -158,7 +158,7 @@ $admin_url = $config['site_url'] . ($config['admin_path'] ?? '/admin/');
     <?php  
 function is_external_menu(array $m): bool {
     $normalize = function($p){ return $p ? str_replace('\\','/', strtolower($p)) : ''; };
-    $plugin_markers = ['/content/plugins/', '/plugins/'];
+    $plugin_markers = ['/' . qp_content_dir() . '/' . qp_plugins_dir() . '/', '/' . qp_plugins_dir() . '/'];
 
     // 1) php_file or url pointing into plugins
     $php = $normalize($m['php_file'] ?? '');

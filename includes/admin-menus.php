@@ -59,6 +59,7 @@ register_admin_menu('users', 'Users', $admin_dir_path . 'users.php', null, null,
 register_admin_menu('appearance', 'Appearance', $admin_dir_path . 'index.php', null, null, 'appearance','qp-color-brush');
 register_admin_menu('menus', 'Menus', $admin_dir_path . 'menus.php', null, 'appearance', 'menus');
 register_admin_menu('themes', 'Themes', $admin_dir_path . 'themes.php', null, 'appearance', 'themes');
+register_admin_menu('widgets', 'Widgets', $admin_dir_path . 'widgets.php', null, 'appearance', 'widgets');
 // Settings
 register_admin_menu('settings', 'Settings', $admin_dir_path . 'index.php', null, null, 'settings','qp-sliders');
 register_admin_menu('general-settings', 'Genral Settings', $admin_dir_path . 'general-settings.php', null, 'settings', 'general-settings');
@@ -66,6 +67,8 @@ register_admin_menu('permalinks', 'Permalinks', $admin_dir_path . 'permalinks.ph
 register_admin_menu('mail', 'Mail', $admin_dir_path . 'mail.php', null, 'settings', 'mail');
 register_admin_menu('cron', 'Cron', $admin_dir_path . 'cron.php', null, 'settings', 'cron');
 register_admin_menu('updates', 'Updates', $admin_dir_path . 'updates.php', null, 'settings', 'updates');
+register_admin_menu('seo', 'SEO', $admin_dir_path . 'seo.php', null, 'settings', 'seo');
+register_admin_menu('api', 'API', $admin_dir_path . 'api.php', null, 'settings', 'api');
 
 // Discussion (comments) settings
 register_admin_menu('discussion', 'Discussion', $admin_dir_path . 'discussion.php', null, 'settings', 'discussion');

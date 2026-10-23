@@ -23,9 +23,7 @@ try {
     $plugin_dir = __DIR__ . "/{$content_dir}/{$plugins_dir}/";
     
 
-    $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'active_plugins' LIMIT 1");
-    $stmt->execute();
-    $active_plugins_json = $stmt->fetchColumn();
+    $active_plugins_json = qp_option_raw('active_plugins');
     $active_plugins = $active_plugins_json ? json_decode($active_plugins_json, true) : [];
     if (is_array($active_plugins) && is_dir($plugin_dir)) {
         foreach ($active_plugins as $plugin => $_) {
@@ -49,9 +47,7 @@ try {
     
     // Load theme and plugin system
 $theme_dir_root = __DIR__ . "/$content_dir/$themes_dir/";
-$stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'active_theme' LIMIT 1");
-$stmt->execute();
-$active_theme = $stmt->fetchColumn() ?: 'default';
+$active_theme = qp_option_raw('active_theme') ?: 'default';
 
 $theme_dir = $theme_dir_root . $active_theme . '/';
 if (!is_dir($theme_dir)) {

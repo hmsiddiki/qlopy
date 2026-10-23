@@ -15,6 +15,10 @@
 (function(){
   window.ajaxurl = <?= json_encode(function_exists('get_admin_ajax_url') ? get_admin_ajax_url() : 'ajax.php') ?>;
   window.qlopyAdminAjax = '<?= $admin_ajax_url ?>';
+  // Folder names from config.php, for scripts that must build addresses (no hardcoded /admin/ or /uploads/ in JS)
+  window.qlopyAdminUrl = <?= json_encode(function_exists('qp_admin_url') ? qp_admin_url() : '') ?>;
+  window.qlopyCmsBase = <?= json_encode(rtrim((string)parse_url(defined('SITE_URL') ? SITE_URL : '', PHP_URL_PATH), '/')) ?>;
+  window.qlopyUploadsDir = <?= json_encode(function_exists('qp_uploads_dirname') ? qp_uploads_dirname() : 'uploads') ?>;
 })();
 </script>
 <style>

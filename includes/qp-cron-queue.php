@@ -7,7 +7,13 @@ if (!defined('QP_CRON_QUEUE_INCLUDED')) define('QP_CRON_QUEUE_INCLUDED', true);
 function qp_cron_queue_table(): string { return table_name('cron_queue'); }
 function qp_cron_logs_table(): string { return table_name('cron_logs'); }
 
-function qp_cron_queue_install(PDO $pdo = null): void {
+// Bump when the queue table changes. The install below runs once per version (a stored flag), not on every queue call.
+const QP_CRON_SCHEMA_VERSION = 2;
+
+function qp_cron_queue_install(PDO $pdo = null, bool $force = false): void {
+    static $done = false;
+    if ($done && !$force) return;
+    if (!$force && function_exists('get_option_meta') && (int)get_option_meta('qp_cron_schema') >= QP_CRON_SCHEMA_VERSION) { $done = true; return; }
     if ($pdo === null) $pdo = db();
     $table = qp_cron_queue_table();
     $sql = "CREATE TABLE IF NOT EXISTS `{$table}` (
@@ -21,6 +27,7 @@ function qp_cron_queue_install(PDO $pdo = null): void {
         `next_run` INT NOT NULL DEFAULT 0,
         `recurrence` INT NOT NULL DEFAULT 0,
         `backoff` INT NOT NULL DEFAULT 60,
+        `heavy` TINYINT NOT NULL DEFAULT 0,
         `last_error` TEXT,
         `created_at` INT NOT NULL,
         `updated_at` INT NOT NULL,
@@ -41,6 +48,20 @@ function qp_cron_queue_install(PDO $pdo = null): void {
     } catch (Throwable $_e) {
         // ignore
     }
+    // `heavy` (C2): a task that must not run from the built-in worker. Added for older installations.
+    try {
+        $has = $pdo->query("SHOW COLUMNS FROM `{$table}` LIKE 'heavy'")->fetchColumn();
+        if (!$has) $pdo->exec("ALTER TABLE `{$table}` ADD COLUMN `heavy` TINYINT NOT NULL DEFAULT 0");
+        // The updater hooks were always heavy: mark rows that already exist.
+        if (function_exists('qp_cron_heavy_hooks')) {
+            $hh = qp_cron_heavy_hooks();
+            if ($hh) $pdo->prepare("UPDATE `{$table}` SET `heavy` = 1 WHERE `hook` IN (" . implode(',', array_fill(0, count($hh), '?')) . ')')->execute($hh);
+        }
+        if (function_exists('update_option_meta')) update_option_meta('qp_cron_schema', QP_CRON_SCHEMA_VERSION);
+    } catch (Throwable $_e) {
+        // leave the flag unset so the next call tries again
+    }
+    $done = true;
 }
 
 
@@ -188,7 +209,7 @@ if (function_exists('add_qp_cron_action')) {
     add_qp_cron_action('qp_cron_rotate_logs', 'qp_cron_rotate_logs');
 }
 
-function qp_queue_task(string $hook, int $when = null, array $args = [], int $max_attempts = 3, int $backoff = 60, int $recurrence = 0): int {
+function qp_queue_task(string $hook, int $when = null, array $args = [], int $max_attempts = 3, int $backoff = 60, int $recurrence = 0, bool $heavy = false): int {
     $pdo = db(); qp_cron_queue_install($pdo);
     // If there's already a pending or running task for this hook, return its id to avoid duplicates
     try {
@@ -256,9 +277,11 @@ function qp_queue_task(string $hook, int $when = null, array $args = [], int $ma
     // Remove the caller-provided flag from args so stored payloads don't include it
     if (isset($args['_origin'])) unset($args['_origin']);
 
-    $stmt = $pdo->prepare('INSERT INTO ' . qp_cron_queue_table() . ' (hook, args, origin, status, attempts, max_attempts, next_run, recurrence, backoff, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-    $ok = $stmt->execute([$hook, json_encode($args), $origin, 'pending', 0, (int)$max_attempts, $ts, (int)$recurrence, (int)$backoff, null, $now, $now]);
-    if (!$ok) return 0; return (int)$pdo->lastInsertId();
+    $stmt = $pdo->prepare('INSERT INTO ' . qp_cron_queue_table() . ' (hook, args, origin, status, attempts, max_attempts, next_run, recurrence, backoff, heavy, last_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    $ok = $stmt->execute([$hook, json_encode($args), $origin, 'pending', 0, (int)$max_attempts, $ts, (int)$recurrence, (int)$backoff, $heavy ? 1 : 0, null, $now, $now]);
+    if (!$ok) return 0;
+    if (function_exists('qp_cron_note_work')) qp_cron_note_work((int)$ts);
+    return (int)$pdo->lastInsertId();
 }
 
 function qp_list_queue(int $limit = 100) {
@@ -280,10 +303,16 @@ function qp_list_queue(int $limit = 100) {
     return $rows;
 }
 
-function qp_get_due_queue(int $limit = 10): array {
+function qp_get_due_queue(int $limit = 10, bool $light_only = false): array {
     $pdo = db(); qp_cron_queue_install($pdo);
-    $now = time(); $sql = 'SELECT * FROM ' . qp_cron_queue_table() . ' WHERE status = ? AND next_run <= ? ORDER BY next_run ASC LIMIT ' . (int)$limit;
-    $stmt = $pdo->prepare($sql); $stmt->execute(['pending', $now]);
+    $now = time(); $params = ['pending', $now]; $skip = '';
+    if ($light_only && function_exists('qp_cron_heavy_hooks')) {
+        $heavy = qp_cron_heavy_hooks();
+        $skip = ' AND heavy = 0';
+        if ($heavy) { $skip .= ' AND hook NOT IN (' . implode(',', array_fill(0, count($heavy), '?')) . ')'; $params = array_merge($params, $heavy); }
+    }
+    $sql = 'SELECT * FROM ' . qp_cron_queue_table() . ' WHERE status = ? AND next_run <= ?' . $skip . ' ORDER BY next_run ASC LIMIT ' . (int)$limit;
+    $stmt = $pdo->prepare($sql); $stmt->execute($params);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
     if (function_exists('format_site_datetime')) {
         foreach ($rows as &$r) {
@@ -376,12 +405,14 @@ function qp_run_task_by_id(int $id, bool $force = false) {
     }
 }
 
-function qp_process_queue(int $limit = 10): array {
+function qp_process_queue(int $limit = 10, bool $light_only = false): array {
     $pdo = db(); qp_cron_queue_install($pdo);
     $now = time(); $results = ['processed'=>[], 'errors'=>[]];
-    $tasks = qp_get_due_queue($limit);
+    qp_cron_recover_stuck($pdo);
+    $tasks = qp_get_due_queue($limit, $light_only);
     foreach ($tasks as $task) {
         $id = (int)$task['id'];
+        $t_start = microtime(true);
         try {
             $stmt = $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET status = ?, attempts = attempts + 1, updated_at = ? WHERE id = ? AND status = ? AND next_run <= ?');
             $stmt->execute(['running', $now, $id, 'pending', $now]);
@@ -410,6 +441,13 @@ function qp_process_queue(int $limit = 10): array {
             $rec = (int)($row['recurrence'] ?? 0);
             if ($rec > 0) { $next = time() + $rec; $stmt = $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET status = ?, attempts = 0, last_error = NULL, next_run = ?, updated_at = ? WHERE id = ?'); $stmt->execute(['pending', $next, time(), $id]); }
             else { $stmt = $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET status = ?, updated_at = ? WHERE id = ?'); $stmt->execute(['done', time(), $id]); }
+            // A task that ran longer than the cap is moved to heavy: it no longer runs from the built-in worker,
+            // only from a crontab, the external ping or the Run button (or the Settings option that allows heavy work).
+            $cap = function_exists('apply_filters') ? (int)apply_filters('qp_cron_task_time_cap', 10) : 10;
+            if ($cap > 0 && (microtime(true) - $t_start) > $cap) {
+                $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET heavy = 1 WHERE id = ?')->execute([$id]);
+                qp_cron_log($id, $hook, 'moved_to_heavy', 'ran ' . round(microtime(true) - $t_start, 1) . ' s, over the ' . $cap . ' s cap');
+            }
             $results['processed'][$id] = ['hook'=>$hook,'result'=>$out];
         } catch (Throwable $e) {
             try {
@@ -440,4 +478,24 @@ function qp_get_logs(int $limit = 200, ?string $hook = null, ?int $task_id = nul
         unset($r);
     }
     return $rows;
+}
+
+
+/**
+ * A task left in `running` (the process died or timed out mid-task) goes back to `pending` after $timeout seconds, or to `failed`
+ * when its attempts are used up. The attempt was already counted when it started. Returns the number of tasks recovered.
+ */
+function qp_cron_recover_stuck(PDO $pdo = null, int $timeout = 600): int {
+    if ($pdo === null) $pdo = db();
+    // Heavy tasks (updates, imports) may legitimately run long: they get an hour.
+    $t = qp_cron_queue_table(); $cut = time() - $timeout; $cutHeavy = time() - max($timeout, 3600); $n = 0;
+    $stale = "status = 'running' AND ((heavy = 0 AND updated_at < ?) OR (heavy = 1 AND updated_at < ?))";
+    try {
+        $st = $pdo->prepare("UPDATE {$t} SET status = 'failed', last_error = 'stuck in running, attempts used up', updated_at = ? WHERE {$stale} AND attempts >= max_attempts");
+        $st->execute([time(), $cut, $cutHeavy]); $n += $st->rowCount();
+        $st = $pdo->prepare("UPDATE {$t} SET status = 'pending', last_error = 'recovered after being stuck in running', updated_at = ? WHERE {$stale}");
+        $st->execute([time(), $cut, $cutHeavy]); $n += $st->rowCount();
+        if ($n && function_exists('qp_cron_log')) qp_cron_log(null, 'qp_cron_recover_stuck', 'recovered', $n . ' task(s)');
+    } catch (Throwable $_) {}
+    return $n;
 }

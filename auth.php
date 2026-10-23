@@ -32,6 +32,47 @@ function getBaseUrl() {
 
 define('SITE_URL', rtrim($config['site_url'], '/'));
 define('PLUGIN_URL', SITE_URL . "/{$config['content_dir']}/{$config['plugins_dir']}");
+
+// ---- Folder names from config.php: admin_dir, content_dir, themes_dir, plugins_dir, uploads_dir.
+// Use these instead of writing "admin", "content/themes", "uploads" in code, so a site that renamed a folder keeps working.
+if (!function_exists('qp_dir_name')) {
+    /** One configured folder name (letters, digits, dot, dash, underscore only; anything else falls back to the default). */
+    function qp_dir_name(string $key): string {
+        static $defaults = ['admin_dir' => 'admin', 'content_dir' => 'content', 'themes_dir' => 'themes', 'plugins_dir' => 'plugins', 'uploads_dir' => 'uploads'];
+        $cfg = $GLOBALS['config'] ?? (function_exists('get_config') ? get_config() : []);
+        $v = is_array($cfg) ? ($cfg[$key] ?? null) : null;
+        return (is_string($v) && $v !== '.' && $v !== '..' && preg_match('/^[A-Za-z0-9_.-]+$/', $v)) ? $v : ($defaults[$key] ?? '');
+    }
+    function qp_admin_dir(): string { return qp_dir_name('admin_dir'); }
+    function qp_content_dir(): string { return qp_dir_name('content_dir'); }
+    function qp_themes_dir(): string { return qp_dir_name('themes_dir'); }
+    function qp_plugins_dir(): string { return qp_dir_name('plugins_dir'); }
+    function qp_uploads_dirname(): string { return qp_dir_name('uploads_dir'); }
+    /** Filesystem path of the themes folder, or of one theme (with a trailing slash). */
+    function qp_themes_path(string $theme = ''): string {
+        return __DIR__ . '/' . qp_content_dir() . '/' . qp_themes_dir() . '/' . ($theme !== '' ? trim($theme, '/\\') . '/' : '');
+    }
+    /** Filesystem path of the plugins folder, or of one plugin (with a trailing slash). */
+    function qp_plugins_path(string $plugin = ''): string {
+        return __DIR__ . '/' . qp_content_dir() . '/' . qp_plugins_dir() . '/' . ($plugin !== '' ? trim($plugin, '/\\') . '/' : '');
+    }
+    /** True when the running script lives in the admin folder. */
+    function qp_is_admin_script(): bool {
+        return !empty($_SERVER['SCRIPT_NAME']) && stripos($_SERVER['SCRIPT_NAME'], '/' . qp_admin_dir() . '/') !== false;
+    }
+    /** Address of an admin screen: qp_admin_url('login.php'). With no argument, the admin folder with a trailing slash. */
+    function qp_admin_url(string $file = ''): string {
+        return SITE_URL . '/' . qp_admin_dir() . '/' . ltrim($file, '/');
+    }
+    /** If $path is an uploads path as stored in options or meta ("/uploads/x.png", "uploads/x.png", also the old literal "uploads"), the part after it; else null. */
+    function qp_uploads_relative(string $path): ?string {
+        foreach (array_unique([qp_uploads_dirname(), 'uploads']) as $name) {
+            if (strpos($path, '/' . $name . '/') === 0) return substr($path, strlen($name) + 2);
+            if (strpos($path, $name . '/') === 0) return substr($path, strlen($name) + 1);
+        }
+        return null;
+    }
+}
 //define('SITE_URL', rtrim(getBaseUrl(), '/'));
 // Load site-specific constants (updater manifest URL, version, etc.)
 // This file is safe to edit per-site and is not intended to be overwritten
@@ -159,11 +200,15 @@ if (!function_exists('qp_logout_link')) {
 // Ensure session cookie constant is available before including other modules
 if (!defined('QP_SESSION_COOKIE')) define('QP_SESSION_COOKIE', 'qp_token');
 require_once __DIR__ . '/db.php';
+if (defined('QP_PROFILE')) qp_profile_mark('auth_db_connect');
 require_once __DIR__ . '/includes/ajax-hooks.php';
 // Make menus API available globally (frontend + admin)
 require_once __DIR__ . '/includes/menus.php';
+// Widget areas and widget types (C6): registries only; the core widget types load when one is placed
+require_once __DIR__ . '/includes/widgets.php';
 // Permalink rewrite helpers
 require_once __DIR__ . '/includes/rewrite.php';
+if (defined('QP_PROFILE')) qp_profile_mark('auth_head_includes');
 
 // -----------------------------------------------------------------------------
 // Shortcode API (shared between frontend and admin)
@@ -367,6 +412,8 @@ function qp_nonce_anonymous_binding(int $expires): ?string {
 }
 
 function qp_nonce_request_context(int $expires): ?array {
+    // Any form token ties the page to one visitor: the page cache must not store it (includes/page-cache.php).
+    if (!empty($GLOBALS['qp_pc_active'])) $GLOBALS['qp_pc_block']['nonce'] = true;
     $cookie = $_COOKIE[QP_SESSION_COOKIE] ?? '';
     $session = $cookie ? validate_session_token($cookie) : null;
     if ($session) {
@@ -390,6 +437,8 @@ if (!function_exists('qp_create_nonce')) {
         $expires = time() + $ttl;
         $context = qp_nonce_request_context($expires);
         if ($context === null) return '';
+        // A page that carries a form token belongs to one visitor: the page cache must not store it (includes/page-cache.php).
+        if (!empty($GLOBALS['qp_pc_active'])) $GLOBALS['qp_pc_block']['nonce'] = true;
 
         $payload = json_encode([
             'v' => 2,
@@ -461,66 +510,26 @@ if (!function_exists('qp_verify_nonce')) {
 
 // Seed anonymous browser requests before templates emit output, so public forms
 // can use the same CSRF API as authenticated forms.
-if (empty($_COOKIE[QP_SESSION_COOKIE]) && !headers_sent()) {
+// While the page cache is switched on ($GLOBALS['qp_pc_state'] is set by index.php) the seed is created lazily instead, when a page really
+// creates a token: otherwise every first visit would set a cookie and no page could be cached (plan D2). Cache off: unchanged.
+if (empty($_COOKIE[QP_SESSION_COOKIE]) && !headers_sent() && !isset($GLOBALS['qp_pc_state'])) {
     qp_nonce_anonymous_binding(time() + 7200);
 }
 
-function qp_cache_backend() {
-    static $backend = null;
-    if ($backend !== null) return $backend;
-    // Use cached config instead of re-loading file in hot path
-    if (function_exists('get_config')) {
-        $cfg = get_config();
-    } else {
-        $cfg = require __DIR__ . '/config.php';
-    }
-    $opt = $cfg['session_cache'] ?? null;
-    // Priority: explicit config, then Redis extension, then Memcached extension, then APCu
-    if (is_array($opt) && !empty($opt['type'])) {
-        $backend = $opt;
-        return $backend;
-    }
-    if (extension_loaded('redis')) {
-        $backend = ['type' => 'redis', 'host' => '127.0.0.1', 'port' => 6379];
-        return $backend;
-    }
-    if (extension_loaded('memcached')) {
-        $backend = ['type' => 'memcached', 'servers' => [['127.0.0.1', 11211]]];
-        return $backend;
-    }
-    // fallback to apcu if available
-    if (function_exists('apcu_fetch')) {
-        $backend = ['type' => 'apcu'];
-        return $backend;
-    }
-    $backend = ['type' => 'none'];
-    return $backend;
-}
+// Object cache API (qp_cache_*): see includes/cache.php
+require_once __DIR__ . '/includes/cache.php';
+// Multilingual contract (qp_i18n_register, qp_current_language, qp_languages, ...): see includes/i18n.php
+require_once __DIR__ . '/includes/i18n.php';
+// Scheduler next-due value (qp_cron_is_due, qp_cron_note_work): see includes/qp-cron-due.php
+require_once __DIR__ . '/includes/qp-cron-due.php';
+// Page cache purge hooks (includes/page-cache.php): loaded in every entry point, but only while the cache is switched on
+// (its state file exists), so events from the admin, AJAX and cron requests can purge it. Off: one file-exists check.
+if (is_file(__DIR__ . '/' . ($config['uploads_dir'] ?? 'uploads') . '/page-cache/state.json')) require_once __DIR__ . '/includes/page-cache.php';
+// Cached sitemaps are deleted when content changes (includes/seo-purge.php): only once a sitemap has been built, so the folder exists.
+if (is_dir(__DIR__ . '/' . ($config['uploads_dir'] ?? 'uploads') . '/seo-cache')) require_once __DIR__ . '/includes/seo-purge.php';
 
 // NOTE: revoke logging removed. Previously wrote JSON lines to updates/logs/session_revokes.log
 
-function qp_cache_fetch($key) {
-    $b = qp_cache_backend();
-    if ($b['type'] === 'apcu') return apcu_fetch($key);
-    if ($b['type'] === 'redis') {
-        static $r = null;
-        if ($r === null) {
-            $r = new Redis();
-            $host = $b['host'] ?? '127.0.0.1'; $port = $b['port'] ?? 6379;
-            @$r->connect($host, $port);
-        }
-        return $r ? json_decode($r->get($key), true) : false;
-    }
-    if ($b['type'] === 'memcached') {
-        static $mc = null;
-        if ($mc === null) {
-            $mc = new Memcached();
-            foreach ($b['servers'] as $s) $mc->addServer($s[0], $s[1]);
-        }
-        return $mc->get($key);
-    }
-    return false;
-}
 
 /**
  * Extended wrapper for qp_handle_upload with convenient option normalization.
@@ -565,51 +574,7 @@ function qp_handle_upload_extensive(array $file, ?int $post_author_id = null, ar
     return qp_handle_upload($file, $post_author_id, $opts);
 }
 
-function qp_cache_store($key, $val, $ttl = 300) {
-    $b = qp_cache_backend();
-    if ($b['type'] === 'apcu') return apcu_store($key, $val, $ttl);
-    if ($b['type'] === 'redis') {
-        static $r = null;
-        if ($r === null) {
-            $r = new Redis();
-            $host = $b['host'] ?? '127.0.0.1'; $port = $b['port'] ?? 6379;
-            @$r->connect($host, $port);
-        }
-        return $r ? $r->setex($key, $ttl, json_encode($val)) : false;
-    }
-    if ($b['type'] === 'memcached') {
-        static $mc = null;
-        if ($mc === null) {
-            $mc = new Memcached();
-            foreach ($b['servers'] as $s) $mc->addServer($s[0], $s[1]);
-        }
-        return $mc->set($key, $val, $ttl);
-    }
-    return false;
-}
 
-function qp_cache_delete($key) {
-    $b = qp_cache_backend();
-    if ($b['type'] === 'apcu') return apcu_delete($key);
-    if ($b['type'] === 'redis') {
-        static $r = null;
-        if ($r === null) {
-            $r = new Redis();
-            $host = $b['host'] ?? '127.0.0.1'; $port = $b['port'] ?? 6379;
-            @$r->connect($host, $port);
-        }
-        return $r ? $r->del($key) : false;
-    }
-    if ($b['type'] === 'memcached') {
-        static $mc = null;
-        if ($mc === null) {
-            $mc = new Memcached();
-            foreach ($b['servers'] as $s) $mc->addServer($s[0], $s[1]);
-        }
-        return $mc->delete($key);
-    }
-    return false;
-}
 
 function get_user_session_tokens($user_id) {
     // Try cache first
@@ -778,6 +743,7 @@ function qp_clear_auth_cookie($revoke = true) {
 }
 
 
+if (defined('QP_PROFILE')) qp_profile_mark('auth_file_parsed');
 function auth_init_from_token() {
     // Validate token cookie and optionally refresh last_activity. Does not set PHP session.
     $cookie = $_COOKIE[QP_SESSION_COOKIE] ?? '';
@@ -1092,12 +1058,12 @@ function get_user_metadata($user_id, $key = '', $single = false) {
 
     // Detect frontend vs admin for ml_get_meta filter consistency
     $is_admin = false;
-    if (!empty($_SERVER['SCRIPT_NAME']) && stripos($_SERVER['SCRIPT_NAME'], '/admin/') !== false) {
+    if (qp_is_admin_script()) {
         $is_admin = true;
     }
     $lang = null;
-    if (!$is_admin && function_exists('ml_get_current_lang')) {
-        $lang = ml_get_current_lang();
+    if (!$is_admin && function_exists('qp_current_language')) {
+        $lang = qp_current_language();
     }
 
     if ($key === '' || $key === null) {
@@ -1109,7 +1075,7 @@ function get_user_metadata($user_id, $key = '', $single = false) {
             $k = $r['meta_key'];
             $raw = $r['meta_value'];
             $val = maybe_unserialize($raw);
-            if (function_exists('apply_filters')) $val = apply_filters('ml_get_meta', $val, $user_id, $k, $lang);
+            if (function_exists('apply_filters')) $val = qp_i18n_filter('ml_get_meta', 'qp_translate_meta', $val, $user_id, $k, $lang);
             $out[$k][] = $val;
         }
         return $out;
@@ -1123,7 +1089,7 @@ function get_user_metadata($user_id, $key = '', $single = false) {
     $values = array_map(function($v){ return maybe_unserialize($v); }, $rows);
     if (function_exists('apply_filters')) {
         foreach ($values as $i => $val) {
-            $values[$i] = apply_filters('ml_get_meta', $val, $user_id, $key, $lang);
+            $values[$i] = qp_i18n_filter('ml_get_meta', 'qp_translate_meta', $val, $user_id, $key, $lang);
         }
     }
     if ($single) return $values[0] ?? '';
@@ -1284,6 +1250,7 @@ function register_user($username, $password, $email, $role = 'subscriber') {
     update_user_meta($user_id, 'role', $role);
     $caps = get_role_capabilities($role);
     assign_capabilities_to_user($user_id, $caps);
+    if (function_exists('do_action')) do_action('user_registered', (int)$user_id);
     return true;
 }
 
@@ -1709,8 +1676,12 @@ add_action('iitcm_ajax_update_post', function($req) {
     }
 
     try {
+        $oldSlugStmt = $pdo->prepare('SELECT slug, post_type FROM ' . table_name('posts') . ' WHERE id = ?');
+        $oldSlugStmt->execute([$post_id]);
+        $oldRow = $oldSlugStmt->fetch(PDO::FETCH_ASSOC) ?: [];
         $stmt = $pdo->prepare("UPDATE " . table_name('posts') . " SET title = ?, slug = ?, content = ?, post_type = ?, status = ? WHERE id = ?");
         $stmt->execute([$title, $slug, $content, $post_type, $status, $post_id]);
+        if (!empty($oldRow['slug']) && $oldRow['slug'] !== $slug && ($oldRow['post_type'] ?? '') === $post_type && function_exists('do_action')) do_action('qp_post_slug_changed', (int)$post_id, (string)$oldRow['slug'], (string)$slug, (string)$post_type);
 
         $stmt = $pdo->prepare("DELETE FROM " . table_name('post_terms') . " WHERE post_id = ?");
         $stmt->execute([$post_id]);
@@ -2254,6 +2225,8 @@ add_action('qp_media_list', function($req) {
         $url = $meta['file']['url'] ?? null;
         $mime = $meta['file']['mime'] ?? null;
         $thumbUrl = $thumb ? $thumb[0] : null;
+        // The stored value is relative to the uploads folder; editors that insert it into content need the full address.
+        $fullUrl = function_exists('qp_get_attachment_url') ? qp_get_attachment_url($id) : null;
 
         // Determine extension
         $ext = '';
@@ -2303,7 +2276,7 @@ add_action('qp_media_list', function($req) {
         $out[] = [
             'id' => $id,
             'title' => $it['title'],
-            'url' => $url ?: '',
+            'url' => $fullUrl ?: ($url ?: ''),
             'mime' => $mime ?: '',
             'thumb' => $thumbUrl,
             'extension' => $ext ?: '',
@@ -2610,14 +2583,14 @@ function get_term_meta($term_id, $key) {
         $ret = is_null($decoded) ? $value : $decoded;
         if (function_exists('apply_filters')) {
             $is_admin = false;
-            if (!empty($_SERVER['SCRIPT_NAME']) && stripos($_SERVER['SCRIPT_NAME'], '/admin/') !== false) {
+            if (qp_is_admin_script()) {
                 $is_admin = true;
             }
             $lang = null;
-            if (!$is_admin && function_exists('ml_get_current_lang')) {
-                $lang = ml_get_current_lang();
+            if (!$is_admin && function_exists('qp_current_language')) {
+                $lang = qp_current_language();
             }
-            $ret = apply_filters('ml_get_meta', $ret, $term_id, $key, $lang);
+            $ret = qp_i18n_filter('ml_get_meta', 'qp_translate_meta', $ret, $term_id, $key, $lang);
         }
         return $ret;
     }
@@ -2699,7 +2672,7 @@ function update_term_metadata($term_id, $meta_key, $meta_value, $prev_value = ''
  * - When `$single === true` returns the first value or an empty string when none
  *
  * Uses `maybe_unserialize()` to restore PHP-serialized or JSON-encoded values
- * and applies `apply_filters('ml_get_meta', ...)` to each returned value.
+ * and applies `qp_i18n_filter('ml_get_meta', 'qp_translate_meta', ...)` to each returned value.
  */
 function get_term_metadata($term_id, $key = '', $single = false) {
     global $pdo;
@@ -2708,12 +2681,12 @@ function get_term_metadata($term_id, $key = '', $single = false) {
 
     // Detect frontend vs admin for ml_get_meta filter consistency
     $is_admin = false;
-    if (!empty($_SERVER['SCRIPT_NAME']) && stripos($_SERVER['SCRIPT_NAME'], '/admin/') !== false) {
+    if (qp_is_admin_script()) {
         $is_admin = true;
     }
     $lang = null;
-    if (!$is_admin && function_exists('ml_get_current_lang')) {
-        $lang = ml_get_current_lang();
+    if (!$is_admin && function_exists('qp_current_language')) {
+        $lang = qp_current_language();
     }
 
     if ($key === '' || $key === null) {
@@ -2725,7 +2698,7 @@ function get_term_metadata($term_id, $key = '', $single = false) {
             $k = $r['meta_key'];
             $raw = $r['meta_value'];
             $val = maybe_unserialize($raw);
-            if (function_exists('apply_filters')) $val = apply_filters('ml_get_meta', $val, $term_id, $k, $lang);
+            if (function_exists('apply_filters')) $val = qp_i18n_filter('ml_get_meta', 'qp_translate_meta', $val, $term_id, $k, $lang);
             $out[$k][] = $val;
         }
         return $out;
@@ -2741,7 +2714,7 @@ function get_term_metadata($term_id, $key = '', $single = false) {
     $values = array_map(function($v){ return maybe_unserialize($v); }, $rows);
     if (function_exists('apply_filters')) {
         foreach ($values as $i => $val) {
-            $values[$i] = apply_filters('ml_get_meta', $val, $term_id, $key, $lang);
+            $values[$i] = qp_i18n_filter('ml_get_meta', 'qp_translate_meta', $val, $term_id, $key, $lang);
         }
     }
 
@@ -2766,13 +2739,13 @@ function get_post_meta($post_id, $meta_key) {
             $lang = null;
             // Detect frontend vs admin by script path (simple heuristic)
             $is_admin = false;
-            if (!empty($_SERVER['SCRIPT_NAME']) && stripos($_SERVER['SCRIPT_NAME'], '/admin/') !== false) {
+            if (qp_is_admin_script()) {
                 $is_admin = true;
             }
-            if (!$is_admin && function_exists('ml_get_current_lang')) {
-                $lang = ml_get_current_lang();
+            if (!$is_admin && function_exists('qp_current_language')) {
+                $lang = qp_current_language();
             }
-            $ret = apply_filters('ml_get_meta', $ret, $post_id, $meta_key, $lang);
+            $ret = qp_i18n_filter('ml_get_meta', 'qp_translate_meta', $ret, $post_id, $meta_key, $lang);
         }
         return $ret;
     }
@@ -2787,7 +2760,7 @@ function get_post_meta($post_id, $meta_key) {
  * - When `$single === true` returns the first value or an empty string when none
  *
  * Uses `maybe_unserialize()` to restore PHP-serialized or JSON-encoded values
- * and applies `apply_filters('ml_get_meta', ...)` to each returned value (same
+ * and applies `qp_i18n_filter('ml_get_meta', 'qp_translate_meta', ...)` to each returned value (same
  * multilingual hook used by `get_post_meta`).
  */
 function get_post_metadata($post_id, $key = '', $single = false) {
@@ -2797,12 +2770,12 @@ function get_post_metadata($post_id, $key = '', $single = false) {
 
     // Detect frontend vs admin for ml_get_meta filter consistency
     $is_admin = false;
-    if (!empty($_SERVER['SCRIPT_NAME']) && stripos($_SERVER['SCRIPT_NAME'], '/admin/') !== false) {
+    if (qp_is_admin_script()) {
         $is_admin = true;
     }
     $lang = null;
-    if (!$is_admin && function_exists('ml_get_current_lang')) {
-        $lang = ml_get_current_lang();
+    if (!$is_admin && function_exists('qp_current_language')) {
+        $lang = qp_current_language();
     }
 
     if ($key === '' || $key === null) {
@@ -2814,7 +2787,7 @@ function get_post_metadata($post_id, $key = '', $single = false) {
             $k = $r['meta_key'];
             $raw = $r['meta_value'];
             $val = maybe_unserialize($raw);
-            if (function_exists('apply_filters')) $val = apply_filters('ml_get_meta', $val, $post_id, $k, $lang);
+            if (function_exists('apply_filters')) $val = qp_i18n_filter('ml_get_meta', 'qp_translate_meta', $val, $post_id, $k, $lang);
             $out[$k][] = $val;
         }
         return $out;
@@ -2831,7 +2804,7 @@ function get_post_metadata($post_id, $key = '', $single = false) {
     $values = array_map(function($v){ return maybe_unserialize($v); }, $rows);
     if (function_exists('apply_filters')) {
         foreach ($values as $i => $val) {
-            $values[$i] = apply_filters('ml_get_meta', $val, $post_id, $key, $lang);
+            $values[$i] = qp_i18n_filter('ml_get_meta', 'qp_translate_meta', $val, $post_id, $key, $lang);
         }
     }
 
@@ -2931,13 +2904,103 @@ function delete_term_meta($term_id, $meta_key, $meta_value = null) {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Per-request option map (core upgrade plan C1b).
+//
+// A front-end or AJAX request used to run one SELECT per get_option_meta() call (54 of 69 queries on a plain page). The
+// first read now loads the whole `site_options` table in one query (when it is small: at most 500 rows and
+// 1 MB; otherwise each name is looked up once and remembered). The map lives for one request only and
+// is kept in step by update_option_meta() and qp_option_map_put(); it is never shared between requests.
+// It is bypassed (the old one-query-per-call behaviour) in the admin and on the CLI, where raw-SQL writers and long-running
+// workers exist.
+// Option names are matched the way the database matches them: case-insensitively and ignoring trailing spaces.
+// -----------------------------------------------------------------------------
+
+function qp_option_map_enabled(): bool {
+    // Kill switch: 'option_map' => false in config.php restores one query per option read.
+    static $switched_off = null;
+    if ($switched_off === null) $switched_off = (($GLOBALS['config']['option_map'] ?? true) === false);
+    return !($switched_off || PHP_SAPI === 'cli' || (defined('IN_ADMIN') && IN_ADMIN));
+}
+
+function &qp_option_store(): array {
+    static $store = ['loaded' => false, 'full' => false, 'rows' => []];
+    return $store;
+}
+
+function qp_option_key($name): string {
+    $n = (string)$name;
+    return rtrim(function_exists('mb_strtolower') ? mb_strtolower($n, 'UTF-8') : strtolower($n), ' ');
+}
+
+/** Forget the request's option map (the next read loads it again). Call after writing site_options with raw SQL. */
+function qp_option_map_flush(): void {
+    $s = &qp_option_store();
+    $s = ['loaded' => false, 'full' => false, 'rows' => []];
+}
+
+/** Record a value already written to the database (raw stored string) so later reads in this request see it. */
+function qp_option_map_put($option_name, $raw): void {
+    $s = &qp_option_store();
+    if ($s['loaded']) $s['rows'][qp_option_key($option_name)] = $raw;
+}
+
+/**
+ * The raw stored string of an option, exactly as `SELECT option_value ... LIMIT 1` + fetchColumn() returned it:
+ * a string, null for a NULL column, or false when the option does not exist.
+ */
+function qp_option_raw($option_name) {
+    global $pdo;
+    $tbl = table_name('site_options');
+
+    if (!qp_option_map_enabled()) {
+        $stmt = $pdo->prepare("SELECT option_value FROM {$tbl} WHERE option_name = ?");
+        $stmt->execute([$option_name]);
+        return $stmt->fetchColumn();
+    }
+
+    $s = &qp_option_store();
+    if (!$s['loaded']) {
+        $s['loaded'] = true;
+        // Limits can be raised or lowered by defining these constants before auth.php loads. (This function can run while
+        // auth.php is still loading, so nothing here may depend on a constant defined further down the file.)
+        $max_rows = defined('QP_OPTION_MAP_MAX_ROWS') ? (int)QP_OPTION_MAP_MAX_ROWS : 500;
+        $max_bytes = defined('QP_OPTION_MAP_MAX_BYTES') ? (int)QP_OPTION_MAP_MAX_BYTES : 1048576;
+        $stmt = $pdo->query("SELECT option_name, option_value FROM {$tbl} LIMIT " . ($max_rows + 1));
+        $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_NUM) : [];
+        $bytes = 0;
+        $keys = [];
+        $ok = count($rows) <= $max_rows;
+        if ($ok) {
+            foreach ($rows as [$n, $v]) {
+                $k = qp_option_key($n);
+                if (isset($keys[$k])) { $ok = false; break; } // two names that the map would merge: do not trust it
+                $keys[$k] = $v;
+                $bytes += strlen((string)$v);
+            }
+        }
+        if ($ok && $bytes <= $max_bytes) {
+            $s['rows'] = $keys;
+            $s['full'] = true;
+        }
+    }
+
+    $k = qp_option_key($option_name);
+    if (array_key_exists($k, $s['rows'])) return $s['rows'][$k];
+    if ($s['full']) return false;
+
+    // Large table: look the name up once and remember the answer for this request.
+    $stmt = $pdo->prepare("SELECT option_value FROM {$tbl} WHERE option_name = ?");
+    $stmt->execute([$option_name]);
+    $v = $stmt->fetchColumn();
+    if ($v !== false) $s['rows'][$k] = $v;
+    return $v;
+}
+
 // Example: Get option meta (single value per key)
 function get_option_meta($option_name) {
-    global $pdo;
-    $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = ?");
-    $stmt->execute([$option_name]);
-    $value = $stmt->fetchColumn();
-    if ($value !== false) {
+    $value = qp_option_raw($option_name);
+    if ($value !== false && $value !== null) {
         $decoded = json_decode($value, true);
         return is_null($decoded) ? $value : $decoded;
     }
@@ -2945,18 +3008,31 @@ function get_option_meta($option_name) {
 }
 
 // Example: Update or insert option meta
+// Writes only when the stored value differs (an identical save used to run an UPDATE anyway).
+// Fires `qp_option_updated` ($option_name, $option_value) after a real change.
 function update_option_meta($option_name, $option_value) {
     global $pdo;
     $json_value = json_encode($option_value);
-    $stmt_check = $pdo->prepare("SELECT COUNT(*) FROM " . table_name('site_options') . " WHERE option_name = ?");
+    $tbl = table_name('site_options');
+    $stmt_check = $pdo->prepare("SELECT option_value FROM {$tbl} WHERE option_name = ?");
     $stmt_check->execute([$option_name]);
-    if ($stmt_check->fetchColumn() > 0) {
-        $stmt = $pdo->prepare("UPDATE " . table_name('site_options') . " SET option_value = ? WHERE option_name = ?");
-        return $stmt->execute([$json_value, $option_name]);
+    $current = $stmt_check->fetchColumn();
+    if ($current !== false) {
+        if ($current === $json_value) {
+            qp_option_map_put($option_name, $json_value);
+            return true;
+        }
+        $stmt = $pdo->prepare("UPDATE {$tbl} SET option_value = ? WHERE option_name = ?");
+        $res = $stmt->execute([$json_value, $option_name]);
     } else {
-        $stmt = $pdo->prepare("INSERT INTO " . table_name('site_options') . " (option_name, option_value) VALUES (?, ?)");
-        return $stmt->execute([$option_name, $json_value]);
+        $stmt = $pdo->prepare("INSERT INTO {$tbl} (option_name, option_value) VALUES (?, ?)");
+        $res = $stmt->execute([$option_name, $json_value]);
     }
+    if ($res) {
+        qp_option_map_put($option_name, $json_value);
+        if (function_exists('do_action')) do_action('qp_option_updated', $option_name, $option_value);
+    }
+    return $res;
 }
 
 // ---------------------- Site settings helpers ----------------------
@@ -3109,14 +3185,10 @@ function get_header() {
     
     // Page template logic
     if ($route === 'singular' && $post_type === 'page') {
-        $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'front_page_option' LIMIT 1");
-        $stmt->execute();
-        $front_page_option = $stmt->fetchColumn() ?: 'theme';
+        $front_page_option = qp_option_raw('front_page_option') ?: 'theme';
         
             if ($front_page_option === 'static') {
-            $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'front_page_id' LIMIT 1");
-            $stmt->execute();
-            $front_post_id = intval($stmt->fetchColumn() ?: 0);
+            $front_post_id = intval(qp_option_raw('front_page_id') ?: 0);
             if ($front_post_id > 0) {
                 $stmt = $pdo->prepare("SELECT * FROM " . table_name('posts') . " WHERE id = ? AND post_type = 'page'");
                 $stmt->execute([$front_post_id]);
@@ -3145,9 +3217,7 @@ function get_header() {
         
 
         if ($front_page_option === 'static' && $front_post_id === intval($post['id'])) {
-            $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'site_name' LIMIT 1");
-            $stmt->execute();
-            $page_title = $stmt->fetchColumn();
+            $page_title = qp_option_raw('site_name');
         } else {
             $page_title = $post['title'];
         }
@@ -3302,8 +3372,8 @@ function qp_the_content(array $post) {
     $content = $post['content'] ?? '';
     if (function_exists('apply_filters')) {
         $lang = null;
-        if (function_exists('ml_get_current_lang')) $lang = ml_get_current_lang();
-        $content = apply_filters('ml_the_content', $content, isset($post['id']) ? (int)$post['id'] : null, $lang);
+        if (function_exists('qp_current_language')) $lang = qp_current_language();
+        $content = qp_i18n_filter('ml_the_content', 'qp_translate_content', $content, isset($post['id']) ? (int)$post['id'] : null, $lang);
     }
     if (function_exists('qp_do_shortcodes')) {
         echo qp_do_shortcodes($content);
@@ -3338,8 +3408,8 @@ if (!function_exists('get_the_title')) {
         }
 
         if (function_exists('apply_filters')) {
-            $lang = function_exists('ml_get_current_lang') ? ml_get_current_lang() : null;
-            $title = apply_filters('ml_the_title', $title, $post_id, $lang);
+            $lang = function_exists('qp_current_language') ? qp_current_language() : null;
+            $title = qp_i18n_filter('ml_the_title', 'qp_translate_title', $title, $post_id, $lang);
         }
         return (string)$title;
     }
@@ -3373,8 +3443,8 @@ if (!function_exists('get_the_content')) {
         }
 
         if (function_exists('apply_filters')) {
-            $lang = function_exists('ml_get_current_lang') ? ml_get_current_lang() : null;
-            $content = apply_filters('ml_the_content', $content, $post_id, $lang);
+            $lang = function_exists('qp_current_language') ? qp_current_language() : null;
+            $content = qp_i18n_filter('ml_the_content', 'qp_translate_content', $content, $post_id, $lang);
         }
         if (function_exists('qp_do_shortcodes')) {
             return qp_do_shortcodes($content);
@@ -3710,17 +3780,14 @@ if (is_dir($theme_dir_root)) {
 // Active theme: pick first if only one, else from DB or fallback
 if (count($available_themes) === 1) {
     $active_theme = $available_themes[0];
-    $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'active_theme' LIMIT 1");
-    $stmt->execute();
-    $db_theme = $stmt->fetchColumn();
+    $db_theme = qp_option_raw('active_theme');
     if ($db_theme !== $active_theme) {
         $stmt_upd = $pdo->prepare("INSERT INTO " . table_name('site_options') . "(option_name, option_value) VALUES ('active_theme', ?) ON DUPLICATE KEY UPDATE option_value=VALUES(option_value)");
         $stmt_upd->execute([$active_theme]);
+        qp_option_map_put('active_theme', $active_theme); // keep this request's option map in step with the raw write
     }
 } else {
-    $stmt = $pdo->prepare("SELECT option_value FROM " . table_name('site_options') . " WHERE option_name = 'active_theme' LIMIT 1");
-    $stmt->execute();
-    $active_theme = $stmt->fetchColumn() ?: ($available_themes[0] ?? 'default');
+    $active_theme = qp_option_raw('active_theme') ?: ($available_themes[0] ?? 'default');
 }
 if (!$active_theme) $active_theme = 'default';
  return rtrim($site_url . '/' . $content_dir . '/' . $themes_dir . '/' . $active_theme. $delimeter);
@@ -4238,7 +4305,7 @@ function qp_get_attachment_image_src(int $post_id, string $size = 'full'): ?arra
     if (!empty($meta['sizes'][$size]['path'])) {
         $storedPath = $meta['sizes'][$size]['path'];
         // ensure we have an absolute filesystem path
-        if (!(strpos($storedPath, DIRECTORY_SEPARATOR) === 0 || preg_match('#^[A-Za-z]:\\#', $storedPath))) {
+        if (!(strpos($storedPath, DIRECTORY_SEPARATOR) === 0 || preg_match('#^[A-Za-z]:[\\\\/]#', $storedPath))) {
             $storedPathFull = rtrim(qp_uploads_base(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, ltrim($storedPath, '/\\'));
         } else {
             $storedPathFull = $storedPath;
@@ -6697,4 +6764,11 @@ function qp_delete_user(int $user_id): bool {
         error_log('qp_delete_user failed: ' . $e->getMessage());
         return false;
     }
+}
+
+// Outgoing webhooks (C4): listeners are attached only while a subscription exists, so other sites pay nothing.
+if (function_exists('qp_option_raw') && !defined('QP_REST_REQUEST_NO_HOOKS')) {
+    $qp_wh = qp_option_raw('qp_webhooks');
+    if (is_string($qp_wh) && strlen($qp_wh) > 4) require_once __DIR__ . '/includes/webhooks.php';
+    unset($qp_wh);
 }

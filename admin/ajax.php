@@ -47,6 +47,8 @@ if (str_starts_with($action, 'qp_media_')) {
         echo json_encode(['status' => 'error', 'message' => 'No permission']);
         exit;
     }
+} else if (str_starts_with($action, 'qpw_')) {
+    // Widget actions (C6): each handler checks its own nonce and capability (the dashboard is open to roles without manage_options)
 } else if ($action === 'qpmeta_save' || str_starts_with($action, 'qpmeta_') || str_starts_with($action, 'taxonomy_') || str_starts_with($action, 'iit_biograpgy') || in_array($action, ['add_term', 'fetch_terms', 'update_term', 'delete_term', 'add_post', 'update_post', 'delete_post', 'delete_iit_boigraphy_item'])) {
     // QPMeta actions, taxonomy actions, and post/term management actions bypass manage_options
     // Individual handlers will enforce their own permission checks (manage_posts, etc.)

@@ -49,7 +49,7 @@ function qpmeta_render_metaboxes($object_type, $object_id = null, $option_prefix
     // Compute site root and use admin ajax consistently from any location
     $site_root = dirname(dirname($_SERVER['SCRIPT_NAME'])); // e.g. /advcms
     if (substr($site_root, -1) !== '/') { $site_root .= '/'; }
-    $ajax_url = $site_root . 'admin/ajax.php?action=qpmeta_save';
+    $ajax_url = $site_root . qp_admin_dir() . '/ajax.php?action=qpmeta_save';
 
     foreach ($GLOBALS['qpmeta_metaboxes'] as $mb_id => $mb) {
         $targets = (array)($mb['object_types'] ?? []);
@@ -303,7 +303,7 @@ function qpmeta_render_metaboxes($object_type, $object_id = null, $option_prefix
 function qpmeta_render_metaboxes_in_context($object_type, $object_id = null, $context = 'normal') {
     $site_root = dirname(dirname($_SERVER['SCRIPT_NAME']));
     if (substr($site_root, -1) !== '/') { $site_root .= '/'; }
-    $ajax_url = $site_root . 'admin/ajax.php?action=qpmeta_save';
+    $ajax_url = $site_root . qp_admin_dir() . '/ajax.php?action=qpmeta_save';
     // Detect current post_type for filtering post-type-specific metaboxes
     $current_post_type = $_GET['post_type'] ?? null;
 
@@ -843,6 +843,8 @@ function qpmeta_field_control($type, $name, $value, $field) {
             break;
         case 'richtext':
             // Admin-only rich text editor field; initialized by editor-init.js (TinyMCE)
+            // Optional 'value_filter' (callable) shapes the stored value for the editor, e.g. plain lines saved before the field was rich text
+            if (!empty($field['value_filter']) && is_callable($field['value_filter'])) $value = (string)call_user_func($field['value_filter'], $value);
             echo "<textarea name='" . htmlspecialchars($name) . "' class='form-control qpmeta-richtext' rows='8'>" . htmlspecialchars($value) . "</textarea>";
             break;
         case 'tags':
@@ -1026,12 +1028,12 @@ function qpmeta_save_metaboxes($object_type, $object_id, $post_data, $files_data
                     }
                 } else {
                     // Fallback to simple upload if media system not available
-                    $upload_dir = __DIR__ . '/../uploads/';
+                    $upload_dir = qp_uploads_base() . DIRECTORY_SEPARATOR;
                     if (!is_dir($upload_dir)) mkdir($upload_dir, 0755, true);
                     $filename = basename($files_data[$id]['name']);
                     $target = $upload_dir . $filename;
                     if (move_uploaded_file($files_data[$id]['tmp_name'], $target)) {
-                        qpmeta_update_object_meta($object_type, $object_id, $storage_id, '/uploads/' . $filename);
+                        qpmeta_update_object_meta($object_type, $object_id, $storage_id, '/' . qp_uploads_dirname() . '/' . $filename);
                     } else {
                         $validation_errors[] = $field['name'] . ' upload failed: Could not move file';
                     }
@@ -1242,8 +1244,7 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_add_
         } catch (Throwable $_) {}
 
         try {
-            $uploads = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'qp_multilang_debug.log';
-            $uploads = realpath(dirname($uploads)) ? dirname($uploads) . DIRECTORY_SEPARATOR . 'qp_multilang_debug.log' : __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'qp_multilang_debug.log';
+            $uploads = qp_uploads_base() . DIRECTORY_SEPARATOR . 'qp_multilang_debug.log';
             $uploads_dir = dirname($uploads);
             if (!is_dir($uploads_dir)) @mkdir($uploads_dir, 0755, true);
             @file_put_contents($uploads, $line, FILE_APPEND | LOCK_EX);
@@ -1538,21 +1539,22 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_add_
             if ($published_at_ts !== null && $published_at_ts > $now) {
                 // schedule for future
                 $effective_status = 'scheduled';
-                $published_at_sql = date('Y-m-d H:i:s', $published_at_ts);
+                $published_at_sql = gmdate('Y-m-d H:i:s', $published_at_ts);
             } else {
                 // publish immediately
                 $effective_status = 'published';
-                $published_at_sql = date('Y-m-d H:i:s', $now);
+                $published_at_sql = gmdate('Y-m-d H:i:s', $now);
             }
         } elseif ($status === 'scheduled') {
             if ($published_at_ts === null || $published_at_ts <= $now) {
                 echo json_encode(['status' => 'error', 'message' => 'Scheduled posts require a future published_at timestamp']); exit;
             }
-            $published_at_sql = date('Y-m-d H:i:s', $published_at_ts);
+            $published_at_sql = gmdate('Y-m-d H:i:s', $published_at_ts);
         } else {
             // draft or pending_review: published_at remains NULL
             $published_at_sql = null;
         }
+        if ($effective_status === 'scheduled' && $published_at_ts && function_exists('qp_cron_note_work')) qp_cron_note_work((int)$published_at_ts);
 
         // Auto-generate title or slug when the post-type does not expose those fields
         if (!$supports_has('title')) {
@@ -1722,25 +1724,26 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_upda
                 // If published_at in past or now, allow backdate; if future and post not already published, convert to scheduled
                 if ($published_at_ts > $now) {
                     $effective_status = 'scheduled';
-                    $published_at_sql = date('Y-m-d H:i:s', $published_at_ts);
+                    $published_at_sql = gmdate('Y-m-d H:i:s', $published_at_ts);
                 } else {
                     $effective_status = 'published';
-                    $published_at_sql = date('Y-m-d H:i:s', $published_at_ts);
+                    $published_at_sql = gmdate('Y-m-d H:i:s', $published_at_ts);
                 }
             } else {
                 // No explicit published_at: set to now
                 $effective_status = 'published';
-                $published_at_sql = date('Y-m-d H:i:s', $now);
+                $published_at_sql = gmdate('Y-m-d H:i:s', $now);
             }
         } elseif ($status === 'scheduled') {
             if ($published_at_ts === null || $published_at_ts <= $now) {
                 echo json_encode(['status'=>'error','message'=>'Scheduled posts require a future published_at timestamp']); exit;
             }
-            $published_at_sql = date('Y-m-d H:i:s', $published_at_ts);
+            $published_at_sql = gmdate('Y-m-d H:i:s', $published_at_ts);
         } else {
             // draft or pending_review: clear published_at
             $published_at_sql = null;
         }
+        if ($effective_status === 'scheduled' && $published_at_ts && function_exists('qp_cron_note_work')) qp_cron_note_work((int)$published_at_ts);
 
         // Do not update slug here. Slug is managed separately via standalone save action.
         $stmt = $pdo->prepare("UPDATE " . table_name('posts') . " SET title = ?, content = ?, status = ?, visibility = ?, post_password = ?, published_at = ?, updated_at = UTC_TIMESTAMP() WHERE id = ? AND post_type = ?");
@@ -1900,8 +1903,12 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_save
         }
 
         // Update slug for post
+        $oldSlugStmt = $pdo->prepare('SELECT slug FROM ' . table_name('posts') . ' WHERE id = ? AND post_type = ?');
+        $oldSlugStmt->execute([$post_id, $post_type]);
+        $old_slug = (string)$oldSlugStmt->fetchColumn();
         $stmtUp = $pdo->prepare("UPDATE " . table_name('posts') . " SET slug = ? WHERE id = ? AND post_type = ?");
         $ok = $stmtUp->execute([$slug, $post_id, $post_type]);
+        if ($ok && $old_slug !== '' && $old_slug !== $slug && function_exists('do_action')) do_action('qp_post_slug_changed', (int)$post_id, $old_slug, (string)$slug, (string)$post_type);
         if ($ok) {
             echo json_encode(['status' => 'success', 'available' => true, 'suggestion' => $slug]);
         } else {

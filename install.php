@@ -157,7 +157,8 @@ CREATE TABLE IF NOT EXISTS {$prefix}post_meta (
     post_id INT NOT NULL,
     meta_key VARCHAR(100) NOT NULL,
     meta_value TEXT,
-    UNIQUE KEY post_meta_unique (post_id, meta_key)
+    UNIQUE KEY post_meta_unique (post_id, meta_key),
+    INDEX post_meta_key_post (meta_key, post_id)
 );
 
 CREATE TABLE IF NOT EXISTS {$prefix}comments (
@@ -221,6 +222,16 @@ CREATE TABLE IF NOT EXISTS {$prefix}site_options (
                     $stmts = array_filter(array_map('trim', preg_split('/;\s*\n/', $sql)));
                     foreach ($stmts as $s) {
                         if ($s) $pdo->exec($s);
+                    }
+
+                    // Mail tables (log, queue, debug) are created now, so the Mail screen never starts with a "tables missing" banner.
+                    // Best-effort: if it fails the core creates them the first time mail is used.
+                    try {
+                        require_once __DIR__ . '/includes/mail-schema.php';
+                        qp_mail_create_tables($pdo, $prefix);
+                        $pdo->prepare("INSERT INTO " . $prefix . "site_options (option_name, option_value) VALUES ('qp_mail_schema', '1') ON DUPLICATE KEY UPDATE option_value = VALUES(option_value)")->execute();
+                    } catch (Throwable $_e) {
+                        // non-fatal
                     }
 
                     // Ensure user_meta.meta_value can store large serialized values
@@ -396,7 +407,7 @@ if ($step === 3) {
     echo '<h4>Installation Complete</h4>';
     echo '<p>Installation finished successfully. For security, remove or restrict access to <code>install.php</code>.</p>';
     $base = _installer_base_path();
-    echo '<p><a class="btn btn-success" href="' . htmlspecialchars($base ?: '/') . '">Go to site</a> <a class="btn btn-secondary" href="' . htmlspecialchars($base . '/admin/login.php') . '">Admin Login</a></p>';
+    echo '<p><a class="btn btn-success" href="' . htmlspecialchars($base ?: '/') . '">Go to site</a> <a class="btn btn-secondary" href="' . htmlspecialchars($base . '/' . (function_exists('qp_admin_dir') ? qp_admin_dir() : 'admin') . '/login.php') . '">Admin Login</a></p>';
     echo '</div></div>';
     render_footer();
     exit;
