@@ -30,6 +30,43 @@ if (!$action) {
     exit;
 }
 
+// Screen Options of the post lists (rows per page, hidden columns): a user's own display preference, so any signed-in admin may save it.
+if ($action === 'qp_save_screen_options') {
+    $so_type = preg_replace('/[^a-z0-9_\-]/i', '', (string)($_POST['post_type'] ?? ''));
+    $so_known = function_exists('get_post_types') ? get_post_types() : [];
+    if ($so_type === '' || !isset($so_known[$so_type])) {
+        echo json_encode(['status' => 'error', 'message' => 'Unknown post type']);
+        exit;
+    }
+    $so_hidden = [];
+    foreach (array_slice((array)($_POST['hidden'] ?? []), 0, 40) as $so_col) {
+        $so_col = preg_replace('/[^a-z0-9_\-]/i', '', (string)$so_col);
+        if ($so_col !== '' && !in_array($so_col, ['cb', 'title'], true)) $so_hidden[] = substr($so_col, 0, 64);
+    }
+    // Yes/no settings sent as "key:1" / "key:0"; only keys a plugin declared for this post type are kept
+    $so_declared = function_exists('apply_filters') ? apply_filters("manage_{$so_type}_screen_options", [], $so_type) : [];
+    $so_options = [];
+    foreach (array_slice((array)($_POST['options'] ?? []), 0, 40) as $so_pair) {
+        [$so_key, $so_val] = array_pad(explode(':', (string)$so_pair, 2), 2, '0');
+        if (is_array($so_declared) && isset($so_declared[$so_key])) $so_options[$so_key] = $so_val === '1';
+    }
+    $so_ok = update_user_meta((int)qp_current_user_id(), 'qp_screen_options_' . $so_type, [
+        'per_page' => max(5, min(200, (int)($_POST['per_page'] ?? 20))),
+        'hidden' => array_values(array_unique($so_hidden)),
+        'options' => $so_options,
+    ]);
+    echo json_encode($so_ok ? ['status' => 'success'] : ['status' => 'error', 'message' => 'Could not save']);
+    exit;
+}
+
+// Keep-alive for open admin pages (assets/js/qp-session.js). Reaching this line means the login is valid, and admin_head.php has already
+// extended it; a logged-out visitor got the 403 above, which is what makes the page offer the sign-in box.
+if ($action === 'qp_heartbeat') {
+    $hb_cookie = explode('|', (string)($_COOKIE[QP_SESSION_COOKIE] ?? ''));
+    echo json_encode(['status' => 'success', 'user' => (int)qp_current_user_id(), 'expires' => (int)($hb_cookie[2] ?? 0), 'now' => time()]);
+    exit;
+}
+
 $hook_name = "iitcm_admin_ajax_{$action}";
 
 // Permission check: allow media actions for manage_posts, menus actions for manage_menus,

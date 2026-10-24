@@ -6,6 +6,18 @@ $GLOBALS['qpmeta_metaboxes'] = [];
 // Field type `repeatable_row` (table of typed rows stored as one value); see the file header.
 require_once __DIR__ . '/qpmeta-rows.php';
 
+if (!function_exists('qp_post_type_singular_label')) {
+    /** Singular display name for a post type ('singular_label' arg, else the plural label with its trailing "s" removed). */
+    function qp_post_type_singular_label($post_type) {
+        $args = function_exists('get_post_types') ? (get_post_types()[$post_type] ?? []) : [];
+        if (!empty($args['singular_label'])) return (string)$args['singular_label'];
+        $label = (string)($args['label'] ?? ucfirst((string)$post_type));
+        if (preg_match('/ies$/i', $label)) return substr($label, 0, -3) . 'y';
+        if (preg_match('/[^s]s$/i', $label)) return substr($label, 0, -1);
+        return $label;
+    }
+}
+
 /**
  * Register a metabox.
  * 
@@ -1617,8 +1629,9 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_add_
         if (function_exists('qpmeta_save_metaboxes')) {
             $metaErrors = [];
             qpmeta_save_metaboxes('post', $post_id, $req, $_FILES, $metaErrors);
+            if (function_exists('do_action')) do_action('qp_post_saved', (int)$post_id, (string)$post_type, false);
             if (!empty($metaErrors)) {
-                echo json_encode(['status' => 'success', 'message' => 'Post added successfully (with meta warnings: ' . implode('; ', $metaErrors) . ')', 'post_id' => (int)$post_id]);
+                echo json_encode(['status' => 'success', 'message' => qp_post_type_singular_label($post_type) . ' added successfully (with meta warnings: ' . implode('; ', $metaErrors) . ')', 'post_id' => (int)$post_id]);
                 exit;
             }
         }
@@ -1631,7 +1644,7 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_add_
             update_post_meta($post_id, 'i18n_content', $req['content__i18n']);
         }
 
-        echo json_encode(['status' => 'success', 'message' => 'Post added successfully', 'post_id' => (int)$post_id]);
+        echo json_encode(['status' => 'success', 'message' => qp_post_type_singular_label($post_type) . ' added successfully', 'post_id' => (int)$post_id]);
     } catch (PDOException $e) {
         echo json_encode(['status' => 'error', 'message' => 'Insert failed: ' . $e->getMessage()]);
     }
@@ -1793,10 +1806,11 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_upda
             $metaErrors = [];
             // Use the same request payload; files are not processed here for uploads (handled via AJAX)
             qpmeta_save_metaboxes('post', $post_id, $req, $_FILES, $metaErrors);
+            if (function_exists('do_action')) do_action('qp_post_saved', (int)$post_id, (string)$post_type, true);
             // We do not fail the post update if meta save has validation errors; include message if needed
             if (!empty($metaErrors)) {
                 // Append meta validation info to success message for visibility
-                echo json_encode(['status' => 'success', 'message' => 'Post updated successfully (with meta warnings: ' . implode('; ', $metaErrors) . ')']);
+                echo json_encode(['status' => 'success', 'message' => qp_post_type_singular_label($post_type) . ' updated successfully (with meta warnings: ' . implode('; ', $metaErrors) . ')']);
                 exit;
             }
         }
@@ -1809,7 +1823,7 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_upda
             update_post_meta($post_id, 'i18n_content', $req['content__i18n']);
         }
 
-        echo json_encode(['status' => 'success', 'message' => 'Post updated successfully']);
+        echo json_encode(['status' => 'success', 'message' => qp_post_type_singular_label($post_type) . ' updated successfully']);
     } catch (PDOException $e) {
         echo json_encode(['status' => 'error', 'message' => 'Update failed: ' . $e->getMessage()]);
     }

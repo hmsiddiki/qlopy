@@ -2,6 +2,8 @@
 ////check ins 1.2.1
 if (!defined('QLOPY_INIT')) define('QLOPY_INIT', true);
 require_once __DIR__ . '/../auth.php';
+// The sign-in box inside an admin page is a frame of this page; no other site may frame it.
+if (!headers_sent()) { header('X-Frame-Options: SAMEORIGIN'); header("Content-Security-Policy: frame-ancestors 'self'"); }
 
 $error = '';
 
@@ -26,7 +28,7 @@ if (!$user) {
     } else {
         // proceed to attempt login
          
-        if (login_user($username, $password)) {
+        if (login_user($username, $password, !empty($_POST['remember']) ? qp_auth_ttl(true) : null)) {
             // Schedule an immediate update check via qp-cron (best-effort, non-blocking)
             try {
                 // Ensure cron core/queue are available for scheduling when admin_head.php is not included on login page
@@ -60,6 +62,12 @@ if (!$user) {
                 }
             } catch (Throwable $_) { /* best-effort: do not block login on scheduler errors */ }
 
+            // Sign-in box shown over an admin page whose session ended (assets/js/qp-session.js): tell the page that opened it, show nothing else.
+            if (!empty($_REQUEST['interim'])) {
+                header('Content-Type: text/html; charset=UTF-8');
+                echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>Signed in</title></head><body style="font-family:Arial,sans-serif;padding:24px"><p>Signed in. You can continue.</p><script>try{window.parent.postMessage({type:"qp-reauth"},window.location.origin);}catch(e){}</script></body></html>';
+                exit;
+            }
             // Back to where the visitor came from, but only to this site's admin screens or the OAuth consent page (never an arbitrary address).
             $rt = (string)($_GET['redirect_to'] ?? '');
             $siteBase = rtrim((string)get_config()['site_url'], '/');
@@ -133,6 +141,10 @@ $admin_url = $config['site_url'] .'/'. ($config['admin_dir'].'/' ?? '/admin/');
         <label for="password">Password</label>
         <input id="password" class="form-control" type="password" name="password" required />
          </div>
+        <div class="form-group form-check">
+            <input id="remember" class="form-check-input" type="checkbox" name="remember" value="1" />
+            <label for="remember" class="form-check-label">Remember me</label>
+        </div>
          <?php if ($error): ?>
         <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
     <?php endif; ?>

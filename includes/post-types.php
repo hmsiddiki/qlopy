@@ -160,6 +160,21 @@ function register_taxonomy(string $taxonomy, array $object_types = [], array $ar
 }
 
 // Read helpers
+/**
+ * A yes/no Screen Options setting of the current user for one post type's list. A plugin declares its settings with the
+ * filter `manage_{post_type}_screen_options` (key => ['label' => string, 'default' => bool]); they appear as checkboxes in the
+ * list's Screen Options panel and are read back here.
+ */
+function qp_get_screen_option(string $post_type, string $key, bool $default = false): bool {
+    static $cache = [];
+    if (!isset($cache[$post_type])) {
+        $uid = function_exists('qp_current_user_id') ? (int)qp_current_user_id() : 0;
+        $saved = ($uid > 0 && function_exists('get_user_meta')) ? get_user_meta($uid, 'qp_screen_options_' . $post_type, true) : null;
+        $cache[$post_type] = is_array($saved) && is_array($saved['options'] ?? null) ? $saved['options'] : [];
+    }
+    return array_key_exists($key, $cache[$post_type]) ? !empty($cache[$post_type][$key]) : $default;
+}
+
 function get_post_types(): array {
     return $GLOBALS['qlopy_post_types'];
 }

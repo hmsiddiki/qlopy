@@ -75,6 +75,19 @@ if ($action === 'delete' && $user_id) {
     exit;
 }
 
+// "Log out everywhere else": ends every sign-in of the account being viewed except the one in use now (own account only).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['qp_end_other_sessions']) && $action === 'edit' && $user_id && (int)$user_id === (int)(get_logged_in_user()['id'] ?? 0)) {
+    if (qp_admin_verify_nonce($_POST['sessions_nonce'] ?? '', 'end_other_sessions')) {
+        $keep = explode('|', (string)($_COOKIE[QP_SESSION_COOKIE] ?? ''))[0] ?? '';
+        $n = qp_revoke_other_sessions((int)$user_id, (string)$keep);
+        qp_set_admin_notice($n . ' other sign-in' . ($n === 1 ? '' : 's') . ' ended.');
+    } else {
+        qp_set_admin_notice('Invalid request (bad nonce)');
+    }
+    header('Location: users.php?action=edit&id=' . (int)$user_id);
+    exit;
+}
+
 if ($action === 'add' || ($action === 'edit' && $user_id)) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $username = trim($_POST['username'] ?? '');
@@ -311,6 +324,35 @@ if (function_exists('get_role_capabilities') && function_exists('assign_capabili
 
                 <br /><button type="submit" class="btn btn-primary"><?= $action === 'add' ? 'Add User' : 'Update User' ?></button>
     </form>
+
+    <?php if ($action === 'edit' && $user_id && (int)$user_id === (int)(get_logged_in_user()['id'] ?? 0)):
+        $qp_my_tokens = get_user_session_tokens((int)$user_id);
+        $qp_now = time(); $qp_cur = explode('|', (string)($_COOKIE[QP_SESSION_COOKIE] ?? ''))[0] ?? '';
+        $qp_my_tokens = array_filter($qp_my_tokens, function ($t) use ($qp_now) { return (int)($t['expires_at'] ?? 0) > $qp_now; });
+        uasort($qp_my_tokens, function ($a, $b) { return (int)($b['last_activity'] ?? 0) <=> (int)($a['last_activity'] ?? 0); });
+    ?>
+    <h4 class="mt-4">Where you are signed in</h4>
+    <table class="table table-sm">
+      <thead><tr><th>Browser</th><th>Address</th><th>Last active</th><th>Expires</th><th></th></tr></thead>
+      <tbody>
+      <?php foreach ($qp_my_tokens as $tid => $t): ?>
+        <tr>
+          <td class="small"><?= htmlspecialchars(mb_substr((string)($t['user_agent'] ?? ''), 0, 70)) ?></td>
+          <td class="small"><?= htmlspecialchars((string)($t['ip'] ?? '')) ?></td>
+          <td class="small"><?= htmlspecialchars(format_site_datetime((int)($t['last_activity'] ?? 0))) ?></td>
+          <td class="small"><?= htmlspecialchars(format_site_datetime((int)$t['expires_at'])) ?><?= !empty($t['remember']) ? ' (remembered)' : '' ?></td>
+          <td class="small"><?= $tid === $qp_cur ? '<strong>this browser</strong>' : '' ?></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    <?php if (count($qp_my_tokens) > 1): ?>
+    <form method="post" action="users.php?action=edit&amp;id=<?= (int)$user_id ?>">
+      <input type="hidden" name="sessions_nonce" value="<?= htmlspecialchars(qp_admin_create_nonce('end_other_sessions')) ?>">
+      <button type="submit" name="qp_end_other_sessions" value="1" class="btn btn-outline-danger btn-sm">Log out everywhere else</button>
+    </form>
+    <?php endif; ?>
+    <?php endif; ?>
 
         <?php include __DIR__ . '/inc/footer.php'; ?>
         <script>

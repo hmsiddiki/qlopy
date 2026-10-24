@@ -170,6 +170,7 @@ if (!function_exists('qp_logout_url')) {
     function qp_logout_url(?string $redirect = null): string {
         $base = (isset($_SERVER['REQUEST_URI']) ? strtok($_SERVER['REQUEST_URI'], '?') : '/') ?: '/';
         $params = ['logout' => '1'];
+        if (function_exists('qp_create_nonce') && !empty($_COOKIE[QP_SESSION_COOKIE])) { $n = qp_create_nonce('qp_logout', 43200); if ($n !== '') $params['_qpn'] = $n; }
         if ($redirect) $params['redirect'] = $redirect;
         return $base . (strpos($base, '?') === false ? '?' : '&') . http_build_query($params);
     }
@@ -220,25 +221,35 @@ if (!function_exists('qp_add_shortcode')) {
     }
 }
 
-    // Auto-handle logout via ?logout=1 (optional redirect via ?redirect=/path)
-    if (PHP_SAPI !== 'cli' && !empty($_GET['logout'])) {
-        // If a redirect was explicitly provided, use it. Otherwise build
-        // a redirect to the current request path but with logout/redirect params removed.
-        $explicit = $_GET['redirect'] ?? $_GET['redirect_to'] ?? null;
-        if ($explicit) {
-            qp_logout($explicit);
-        } else {
-            $req = $_SERVER['REQUEST_URI'] ?? '/';
-            $path = strtok($req, '?') ?: '/';
-            $qs = parse_url($req, PHP_URL_QUERY) ?: '';
-            parse_str($qs, $qarr);
-            // Remove logout-related params
-            unset($qarr['logout'], $qarr['redirect'], $qarr['redirect_to']);
-            $newqs = http_build_query($qarr);
-            $target = $path . ($newqs ? ('?' . $newqs) : '');
-            if ($target === '') $target = '/';
-            qp_logout($target);
+    // Logout via ?logout=1 (optional redirect via ?redirect=/path), called once the nonce functions exist (see qp_handle_logout_request()).
+    // A signed-in visitor needs the `_qpn` nonce that qp_logout_url() adds; without it a page asks "Do you really want to log out?" first, so a
+    // link prefetcher, an image tag on another site or a mistyped address cannot end the session.
+    function qp_handle_logout_request(): void {
+        if (PHP_SAPI === 'cli' || empty($_REQUEST['logout'])) return;
+        $signedIn = !empty($_COOKIE[QP_SESSION_COOKIE]) && function_exists('validate_session_token') && validate_session_token($_COOKIE[QP_SESSION_COOKIE]);
+        $req = $_SERVER['REQUEST_URI'] ?? '/';
+        $path = strtok($req, '?') ?: '/';
+        $qs = parse_url($req, PHP_URL_QUERY) ?: '';
+        parse_str($qs, $qarr);
+        unset($qarr['logout'], $qarr['redirect'], $qarr['redirect_to'], $qarr['_qpn']);
+        $newqs = http_build_query($qarr);
+        $target = $path . ($newqs ? ('?' . $newqs) : '');
+        if ($target === '') $target = '/';
+        $explicit = $_REQUEST['redirect'] ?? $_REQUEST['redirect_to'] ?? null;
+        if ($signedIn && !qp_verify_nonce((string)($_REQUEST['_qpn'] ?? ''), 'qp_logout')) {
+            if (headers_sent()) return;
+            http_response_code(200);
+            header('Content-Type: text/html; charset=UTF-8');
+            header('Cache-Control: no-store');
+            $e = function ($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); };
+            echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Log out</title></head>'
+               . '<body style="font-family:Arial,sans-serif;max-width:420px;margin:15vh auto;padding:0 16px"><h2>Log out?</h2><p>Do you really want to log out?</p>'
+               . '<form method="post" action="' . $e($path) . '"><input type="hidden" name="logout" value="1"><input type="hidden" name="_qpn" value="' . $e(qp_create_nonce('qp_logout', 600)) . '">'
+               . ($explicit ? '<input type="hidden" name="redirect" value="' . $e($explicit) . '">' : '')
+               . '<button type="submit" style="padding:8px 16px">Log out</button> <a href="' . $e($target) . '">Cancel</a></form></body></html>';
+            exit;
         }
+        qp_logout($explicit ?: $target);
     }
 
 if (!function_exists('qp_do_shortcodes')) {
@@ -431,7 +442,7 @@ function qp_nonce_request_context(int $expires): ?array {
 
 // Version 2 nonces provide CSRF protection while preserving the original public API.
 if (!function_exists('qp_create_nonce')) {
-    function qp_create_nonce(string $action = '-1', int $ttl = 7200): string {
+    function qp_create_nonce(string $action = '-1', int $ttl = 43200): string {
         if ($action === '' || $ttl <= 0) return '';
 
         $expires = time() + $ttl;
@@ -513,11 +524,12 @@ if (!function_exists('qp_verify_nonce')) {
 // While the page cache is switched on ($GLOBALS['qp_pc_state'] is set by index.php) the seed is created lazily instead, when a page really
 // creates a token: otherwise every first visit would set a cookie and no page could be cached (plan D2). Cache off: unchanged.
 if (empty($_COOKIE[QP_SESSION_COOKIE]) && !headers_sent() && !isset($GLOBALS['qp_pc_state'])) {
-    qp_nonce_anonymous_binding(time() + 7200);
+    qp_nonce_anonymous_binding(time() + 43200);
 }
 
 // Object cache API (qp_cache_*): see includes/cache.php
 require_once __DIR__ . '/includes/cache.php';
+qp_handle_logout_request();   // needs the nonce functions above and the cache API (token lookups)
 // Multilingual contract (qp_i18n_register, qp_current_language, qp_languages, ...): see includes/i18n.php
 require_once __DIR__ . '/includes/i18n.php';
 // Scheduler next-due value (qp_cron_is_due, qp_cron_note_work): see includes/qp-cron-due.php
@@ -590,46 +602,125 @@ function get_user_session_tokens($user_id) {
     foreach ($tokens as $k => $v) {
         if (isset($v['expires_at'])) $tokens[$k]['expires_at'] = (int)$v['expires_at'];
     }
-    // store in cache for TTL equal to nearest expiry or default 300s
-    $ttl = 300;
-    if (!empty($tokens)) {
-        $minExpires = null;
-        foreach ($tokens as $t) { if (!empty($t['expires_at'])) { if ($minExpires === null || $t['expires_at'] < $minExpires) $minExpires = $t['expires_at']; }}
-        if ($minExpires !== null) $ttl = max(30, $minExpires - time());
-    }
+    // The cached copy lives at most 60 seconds, and never past the first token that is still valid and about to expire.
+    $ttl = 60;
+    $now = time();
+    foreach ($tokens as $t) { $e = (int)($t['expires_at'] ?? 0); if ($e > $now && $e - $now < $ttl) $ttl = max(1, $e - $now); }
     qp_cache_store($cacheKey, $tokens, $ttl);
     return $tokens;
 }
 
 function store_user_session_tokens($user_id, $tokens) {
-    // persist to DB
+    // Replaces the whole list (kept for callers that already hold it). Code that changes a list should use
+    // qp_user_meta_mutate() so two requests cannot overwrite each other's change.
     update_user_meta($user_id, 'session_tokens', $tokens);
-    // update cache
-    $cacheKey = 'qp_user_tokens_' . $user_id;
-    $ttl = 300;
-    if (!empty($tokens)) {
-        $minExpires = null;
-        foreach ($tokens as $t) { if (!empty($t['expires_at'])) { if ($minExpires === null || $t['expires_at'] < $minExpires) $minExpires = $t['expires_at']; }}
-        if ($minExpires !== null) $ttl = max(30, $minExpires - time());
-    }
-    qp_cache_store($cacheKey, $tokens, $ttl);
+    qp_cache_delete('qp_user_tokens_' . $user_id);
 }
 
-function create_session_token($user_id, $ttl = 21600, $meta = null) {
+/**
+ * Login-session settings (Settings > General > Login sessions). Seconds.
+ *   session_ttl:  how long an ordinary login lasts after the last visit (sliding), default 2 days
+ *   remember_ttl: "Remember me", default 14 days
+ *   max_tokens:   logins kept per user; the least recently used are dropped, default 10
+ */
+function qp_auth_settings(): array {
+    static $s = null;
+    if ($s !== null) return $s;
+    $stored = function_exists('get_option_meta') && !empty($GLOBALS['pdo']) ? get_option_meta('qp_auth_settings') : null;
+    $d = ['session_ttl' => 172800, 'remember_ttl' => 1209600, 'max_tokens' => 10];
+    $s = array_merge($d, is_array($stored) ? $stored : []);
+    $s['session_ttl']  = max(3600, min(30 * 86400, (int)$s['session_ttl']));
+    $s['remember_ttl'] = max(86400, min(365 * 86400, (int)$s['remember_ttl']));
+    $s['max_tokens']   = max(1, min(100, (int)$s['max_tokens']));
+    return $s;
+}
+
+/** Length of a login in seconds. Filter: qp_auth_session_ttl ($ttl, $remember). */
+function qp_auth_ttl(bool $remember = false): int {
+    $s = qp_auth_settings();
+    $ttl = $remember ? $s['remember_ttl'] : $s['session_ttl'];
+    if (function_exists('apply_filters')) { $f = apply_filters('qp_auth_session_ttl', $ttl, $remember); if (is_numeric($f) && (int)$f > 0) $ttl = (int)$f; }
+    return (int)$ttl;
+}
+
+/**
+ * Change one user meta value that holds an array (session tokens, admin form tokens) under a row lock, so two requests running at the
+ * same time cannot overwrite each other's change. $fn receives the current array and returns the new one (or null for no change).
+ * Returns the stored array, or null when the database could not be reached.
+ */
+function qp_user_meta_mutate($user_id, string $key, callable $fn) {
+    global $pdo;
+    $t = table_name('user_meta');
+    $user_id = (int)$user_id;
+    $own = !$pdo->inTransaction();
+    for ($try = 0; $try < 6; $try++) {
+        try {
+            if ($own) $pdo->beginTransaction();
+            // Lock the row first. Inserting before selecting would take a shared lock on an existing row, and two requests holding it
+            // would then deadlock when both ask for the exclusive one.
+            $st = $pdo->prepare("SELECT meta_value FROM {$t} WHERE user_id = ? AND meta_key = ? LIMIT 1 FOR UPDATE");
+            $st->execute([$user_id, $key]);
+            $raw = $st->fetchColumn();
+            if ($raw === false) {   // no row yet: create it, then lock and read it again
+                $pdo->prepare("INSERT IGNORE INTO {$t} (user_id, meta_key, meta_value) VALUES (?, ?, ?)")->execute([$user_id, $key, maybe_serialize([])]);
+                $st->execute([$user_id, $key]);
+                $raw = $st->fetchColumn();
+            }
+            $cur = ($raw === false || $raw === '' || $raw === null) ? [] : maybe_unserialize($raw);
+            if (!is_array($cur)) $cur = [];
+            $new = $fn($cur);
+            if (is_array($new) && $new !== $cur) {
+                $pdo->prepare("UPDATE {$t} SET meta_value = ? WHERE user_id = ? AND meta_key = ?")->execute([maybe_serialize($new), $user_id, $key]);
+                $cur = $new;
+            }
+            if ($own) $pdo->commit();
+            return $cur;
+        } catch (PDOException $e) {
+            if ($own && $pdo->inTransaction()) $pdo->rollBack();
+            $code = (string)($e->errorInfo[1] ?? '');
+            if (($code === '1213' || $code === '1205') && $try < 5) { usleep(random_int(10000, 40000) * ($try + 1)); continue; }   // deadlock or lock wait: try again
+            error_log('qp_user_meta_mutate failed: ' . $e->getMessage());
+            return null;
+        }
+    }
+    return null;
+}
+
+/** Remove expired logins and keep only the newest $max by last activity. */
+function qp_auth_tidy_tokens(array $tokens, int $max): array {
+    $now = time();
+    foreach ($tokens as $id => $row) { if ((int)($row['expires_at'] ?? 0) <= $now) unset($tokens[$id]); }
+    if (count($tokens) > $max) {
+        uasort($tokens, function ($a, $b) { return (int)($b['last_activity'] ?? 0) <=> (int)($a['last_activity'] ?? 0); });
+        $tokens = array_slice($tokens, 0, $max, true);
+    }
+    return $tokens;
+}
+
+/** $ttl seconds; null = the ordinary login length from the settings. */
+function create_session_token($user_id, $ttl = null, $meta = null) {
     $token_id = bin2hex(random_bytes(24));
-            $now = time(); // Get the current time
-        $expires = $now + (int)$ttl; // Set expiration time
-    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
-    $tokens = get_user_session_tokens($user_id);
-    $tokens[$token_id] = [
+    $now = time();
+    $base = qp_auth_ttl(false);
+    $ttl = ($ttl === null || (int)$ttl <= 0) ? $base : (int)$ttl;
+    $expires = $now + $ttl;
+    $row = [
         'expires_at' => $expires,
         'last_activity' => $now,
-        'ip' => $ip,
-        'user_agent' => $ua,
-        'meta' => $meta
+        'created' => $now,
+        'ttl' => $ttl,
+        'remember' => $ttl > $base,
+        'ip' => $_SERVER['REMOTE_ADDR'] ?? '',
+        'user_agent' => mb_substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255),
+        'meta' => $meta,
     ];
-    store_user_session_tokens($user_id, $tokens);
+    $max = qp_auth_settings()['max_tokens'];
+    $res = qp_user_meta_mutate($user_id, 'session_tokens', function ($tokens) use ($token_id, $row, $max) {
+        $tokens[$token_id] = $row;
+        return qp_auth_tidy_tokens($tokens, $max);
+    });
+    qp_cache_delete('qp_user_tokens_' . $user_id);
+    if ($res === null) return false;   // the login could not be stored: report it instead of handing out a cookie that cannot work
     return ['token_id'=>$token_id,'user_id'=>$user_id,'expires'=>$expires];
 }
 
@@ -649,7 +740,7 @@ function set_session_token_cookie($token_row) {
         $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['SERVER_PORT'] ?? '') == '443';
         $secureFlag = $isHttps || (!empty($parsed['scheme']) && strtolower($parsed['scheme']) === 'https');
     }
-    setcookie(QP_SESSION_COOKIE, $val, (int)$expires, $cookiePath, '', $secureFlag, true);
+    setcookie(QP_SESSION_COOKIE, $val, ['expires' => (int)$expires, 'path' => $cookiePath, 'secure' => $secureFlag, 'httponly' => true, 'samesite' => 'Lax']);
 }
 
 function validate_session_token($cookieVal) {
@@ -673,30 +764,32 @@ function validate_session_token($cookieVal) {
 
 function revoke_session_token($token_id, $user_id = null) {
     if (empty($token_id)) return false;
-    // If user_id provided, remove directly
-    if ($user_id) {
-        $tokens = get_user_session_tokens((int)$user_id);
-        if (isset($tokens[$token_id])) unset($tokens[$token_id]);
-        store_user_session_tokens((int)$user_id, $tokens);
-        qp_cache_delete('qp_user_tokens_' . $user_id);
-        return true;
+    // If user_id is not provided, find the user from the cookie
+    if (!$user_id) {
+        $cookie = $_COOKIE[QP_SESSION_COOKIE] ?? '';
+        $parts = $cookie ? explode('|', $cookie) : [];
+        if (count($parts) >= 2) $user_id = (int)$parts[1];
     }
-    // If not provided, attempt to read cookie to find user
-    $cookie = $_COOKIE[QP_SESSION_COOKIE] ?? '';
-    if ($cookie) {
-        $parts = explode('|', $cookie);
-        if (count($parts) >= 2) {
-            $u = (int)$parts[1];
-            $tokens = get_user_session_tokens($u);
-            if (isset($tokens[$token_id])) {
-                unset($tokens[$token_id]);
-                store_user_session_tokens($u, $tokens);
-                qp_cache_delete('qp_user_tokens_' . $u);
-                return true;
-            }
-        }
-    }
-    return false;
+    if (!$user_id) return false;
+    $found = false;
+    qp_user_meta_mutate((int)$user_id, 'session_tokens', function ($tokens) use ($token_id, &$found) {
+        if (!isset($tokens[$token_id])) return null;
+        unset($tokens[$token_id]); $found = true;
+        return $tokens;
+    });
+    qp_cache_delete('qp_user_tokens_' . (int)$user_id);
+    return true;
+}
+
+/** Log a user out everywhere except the login with $keep_token_id. Returns how many logins were ended. */
+function qp_revoke_other_sessions($user_id, string $keep_token_id = ''): int {
+    $n = 0;
+    qp_user_meta_mutate((int)$user_id, 'session_tokens', function ($tokens) use ($keep_token_id, &$n) {
+        foreach (array_keys($tokens) as $id) { if ($id !== $keep_token_id) { unset($tokens[$id]); $n++; } }
+        return $tokens;
+    });
+    qp_cache_delete('qp_user_tokens_' . (int)$user_id);
+    return $n;
 }
 
 function revoke_user_tokens($user_id) {
@@ -737,7 +830,7 @@ function qp_clear_auth_cookie($revoke = true) {
     }
 
     // Clear cookie and superglobals
-    setcookie(QP_SESSION_COOKIE, '', time() - 42000, $cookiePath, '', false, true);
+    setcookie(QP_SESSION_COOKIE, '', ['expires' => time() - 42000, 'path' => $cookiePath, 'httponly' => true, 'samesite' => 'Lax']);
     unset($_COOKIE[QP_SESSION_COOKIE]);
     return true;
 }
@@ -753,18 +846,22 @@ function auth_init_from_token() {
         // also implement sliding sessions: extend expires_at on activity and update cookie
         $now = time();
         if (empty($row['last_activity']) || $row['last_activity'] < $now - 300) {
-            $tokens = get_user_session_tokens((int)$row['user_id']);
-            if (isset($tokens[$row['token_id']])) {
-                $tokens[$row['token_id']]['last_activity'] = $now;
-                // extend expiry by default TTL (use same default as create_session_token)
-                $ttl = 21600; // 6 hours
-                $newExpires = $now + (int)$ttl;
-                $tokens[$row['token_id']]['expires_at'] = $newExpires;
-                store_user_session_tokens((int)$row['user_id'], $tokens);
-                // update client cookie so browser sees extended expiry
-                if (function_exists('set_session_token_cookie')) {
-                    set_session_token_cookie(['token_id' => $row['token_id'], 'user_id' => $row['user_id'], 'expires' => $newExpires]);
-                }
+            // Each login keeps its own length (ordinary or "remember me"); a login made before lengths were stored gets the ordinary one.
+            $newExpires = 0; $tid = $row['token_id'];
+            $uid = (int)$row['user_id'];
+            qp_user_meta_mutate($uid, 'session_tokens', function ($tokens) use ($tid, $now, &$newExpires) {
+                if (!isset($tokens[$tid])) return null;
+                $ttl = (int)($tokens[$tid]['ttl'] ?? 0);
+                if ($ttl <= 0) { $ttl = qp_auth_ttl(false); $tokens[$tid]['ttl'] = $ttl; }
+                $newExpires = $now + $ttl;
+                $tokens[$tid]['last_activity'] = $now;
+                $tokens[$tid]['expires_at'] = $newExpires;
+                return qp_auth_tidy_tokens($tokens, qp_auth_settings()['max_tokens']);
+            });
+            qp_cache_delete('qp_user_tokens_' . $uid);
+            // update client cookie so browser sees extended expiry
+            if ($newExpires > 0 && !headers_sent() && function_exists('set_session_token_cookie')) {
+                set_session_token_cookie(['token_id' => $tid, 'user_id' => $uid, 'expires' => $newExpires]);
             }
         }
         return true;
@@ -1271,7 +1368,8 @@ function login_user($username, $password, $ttl = null) {
         $tokenRow = null;
         if (function_exists('create_session_token')) {
             $tokenRow = $ttl === null ? create_session_token($uid) : create_session_token($uid, (int)$ttl);
-            if ($tokenRow && function_exists('set_session_token_cookie')) {
+            if (!$tokenRow) return false;   // the login could not be stored
+            if (function_exists('set_session_token_cookie')) {
                 set_session_token_cookie($tokenRow);
             }
         }
@@ -1308,7 +1406,8 @@ function login_user_versatile($username, $password, $ttl = null) {
         $tokenRow = null;
         if (function_exists('create_session_token')) {
             $tokenRow = $ttl === null ? create_session_token($uid) : create_session_token($uid, (int)$ttl);
-            if ($tokenRow && function_exists('set_session_token_cookie')) {
+            if (!$tokenRow) return false;   // the login could not be stored
+            if (function_exists('set_session_token_cookie')) {
                 set_session_token_cookie($tokenRow);
             }
         }
@@ -1459,7 +1558,8 @@ function logout_user() {
                 revoke_session_token($parts[0], (int)$parts[1]);
             }
         }
-        setcookie(QP_SESSION_COOKIE, '', time() - 42000, '/', '', true, true);
+        $cp = rtrim((string)(parse_url((string)(get_config()['site_url'] ?? ''), PHP_URL_PATH) ?? ''), '/') ?: '/';
+        setcookie(QP_SESSION_COOKIE, '', ['expires' => time() - 42000, 'path' => $cp, 'httponly' => true, 'samesite' => 'Lax']);
         unset($_COOKIE[QP_SESSION_COOKIE]);
     }
     // Clear cached current user
@@ -4101,7 +4201,26 @@ function qp_handle_upload(array $file, ?int $post_author_id = null, array $optio
     return [true, ['post_id' => $post_id, 'url' => $url, 'path' => $target, 'mime' => $mime]];
 }
 
+/**
+ * Load the stored metadata of many attachments in one query, so later qp_get_attachment_metadata() calls
+ * for those IDs (a list of thumbnails, say) cost no query each.
+ */
+function qp_prime_attachment_metadata(array $ids): void {
+    $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn($id) => $id > 0)));
+    $ids = array_values(array_filter($ids, static fn($id) => !array_key_exists($id, $GLOBALS['qp_attachment_meta_cache'] ?? [])));
+    if (!$ids) return;
+    $stmt = db()->prepare('SELECT post_id, meta_value FROM ' . table_name('post_meta') . ' WHERE meta_key = ? AND post_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')');
+    $stmt->execute(array_merge(['_file_metadata'], $ids));
+    $found = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_NUM) as [$postId, $value]) {
+        $data = json_decode((string)$value, true);
+        $found[(int)$postId] ??= is_array($data) ? $data : null;
+    }
+    foreach ($ids as $id) $GLOBALS['qp_attachment_meta_cache'][$id] = $found[$id] ?? null;
+}
+
 function qp_get_attachment_metadata(int $post_id): ?array {
+    if (array_key_exists($post_id, $GLOBALS['qp_attachment_meta_cache'] ?? [])) return $GLOBALS['qp_attachment_meta_cache'][$post_id];
     $pdo = db();
     $stmt = $pdo->prepare('SELECT meta_value FROM ' . table_name('post_meta') . ' WHERE post_id = ? AND meta_key = ? LIMIT 1');
     $stmt->execute([$post_id, '_file_metadata']);
@@ -4115,10 +4234,13 @@ function qp_update_attachment_metadata(int $post_id, array $meta): void {
     $pdo = db();
     $stmt = $pdo->prepare('UPDATE ' . table_name('post_meta') . ' SET meta_value = ? WHERE post_id = ? AND meta_key = ?');
     $stmt->execute([json_encode($meta), $post_id, '_file_metadata']);
+    unset($GLOBALS['qp_attachment_meta_cache'][$post_id]);
 }
 
 // Clear in-memory attachment caches for a post or all
 function qp_clear_attachment_cache(?int $post_id = null): void {
+    if ($post_id === null) unset($GLOBALS['qp_attachment_meta_cache']);
+    else unset($GLOBALS['qp_attachment_meta_cache'][$post_id]);
     if (!isset($GLOBALS['qp_attachment_cache'])) return;
     if ($post_id === null) {
         unset($GLOBALS['qp_attachment_cache']);

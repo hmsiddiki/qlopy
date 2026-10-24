@@ -94,6 +94,7 @@ if (empty($action)) {
       'slug' => ['label' => 'Slug', 'class' => 'col-slug', 'sortable' => false],
       'status' => ['label' => 'Status', 'class' => 'col-status', 'sortable' => false],
       'created_at' => ['label' => 'Created At', 'class' => 'col-created', 'sortable' => true],
+      'published_at' => ['label' => 'Published At', 'class' => 'col-published', 'sortable' => true],
     ];
     if (function_exists('get_post_list_columns_for_type')) {
       $cols_meta_for_query = get_post_list_columns_for_type($post_type, $default_columns_for_query);
@@ -107,19 +108,57 @@ if (empty($action)) {
       unset($cols_meta_for_query['id']);
     }
 
+    // Let plugins add, remove, reorder or re-label columns; applied here so the sortable flags also drive the ORDER BY below
+    if (function_exists('apply_filters')) {
+      $cols_meta_for_query = apply_filters("manage_{$post_type}_posts_columns_meta", $cols_meta_for_query, $post_type);
+      $cols_meta_for_query = apply_filters('manage_posts_columns_meta', $cols_meta_for_query, $post_type);
+    }
+
     // Determine ORDER BY clause using orderby/order GET params if column is sortable and maps to a real column
     $orderby = $_GET['orderby'] ?? '';
     $order = strtolower($_GET['order'] ?? 'desc');
     $order = ($order === 'asc') ? 'ASC' : 'DESC';
-    $valid_post_cols = ['id','created_at','title','slug','status'];
-    if ($orderby && isset($cols_meta_for_query[$orderby]) && !empty($cols_meta_for_query[$orderby]['sortable']) && in_array($orderby, $valid_post_cols)) {
-      $sql_order = "ORDER BY " . $orderby . " " . $order;
-    } else {
-      $sql_order = "ORDER BY id DESC";
+    $valid_post_cols = ['id','created_at','published_at','title','slug','status'];
+    // A column that is not a posts column can still sort: 'orderby_expr' is a SQL expression (with an optional
+    // 'orderby_join' that supplies its table, e.g. a plugin's lookup table) and 'orderby_meta' => ['key' => ..., 'numeric' => bool]
+    // sorts by one single-valued meta key. Both come from plugin code, never from the request. Empty values sort last.
+    $sql_join = '';
+    $sql_order = "ORDER BY id DESC";
+    $order_col = ($orderby && isset($cols_meta_for_query[$orderby]) && !empty($cols_meta_for_query[$orderby]['sortable'])) ? $cols_meta_for_query[$orderby] : null;
+    if ($order_col !== null) {
+      $order_expr = null;
+      if (in_array($orderby, $valid_post_cols)) {
+        $sql_order = "ORDER BY " . $orderby . " " . $order;
+      } elseif (!empty($order_col['orderby_expr']) && is_string($order_col['orderby_expr'])) {
+        $order_expr = $order_col['orderby_expr'];
+        $sql_join = is_string($order_col['orderby_join'] ?? null) ? $order_col['orderby_join'] : '';
+      } elseif (!empty($order_col['orderby_meta']['key']) && preg_match('/^[A-Za-z0-9_\-]{1,191}$/', (string)$order_col['orderby_meta']['key'])) {
+        $m_val = !empty($order_col['orderby_meta']['numeric']) ? 'CAST(m.meta_value AS DECIMAL(20,4))' : 'm.meta_value';
+        $order_expr = '(SELECT MIN(' . $m_val . ') FROM ' . table_name('post_meta') . ' m WHERE m.post_id = ' . table_name('posts') . '.id AND m.meta_key = ' . $pdo->quote((string)$order_col['orderby_meta']['key']) . ')';
+      }
+      if ($order_expr !== null) {
+        $sql_order = "ORDER BY (" . $order_expr . ") IS NULL, " . $order_expr . " " . $order . ", " . table_name('posts') . ".id DESC";
+      }
     }
 
     // Pagination params
-    $per_page = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) : 20;
+    // Screen Options (per user and post type): rows per page and hidden columns
+    $screen_uid = function_exists('qp_current_user_id') ? (int)qp_current_user_id() : 0;
+    $screen_opts = ($screen_uid > 0 && function_exists('get_user_meta')) ? get_user_meta($screen_uid, 'qp_screen_options_' . $post_type, true) : null;
+    $screen_opts = is_array($screen_opts) ? $screen_opts : [];
+    $per_page_default = max(5, min(200, (int)($screen_opts['per_page'] ?? 20)));
+    $per_page = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) : $per_page_default;
+    // Columns the user may switch off; the checkbox and the title always stay
+    $screen_columns = [];
+    foreach ($cols_meta_for_query as $ck => $cm) {
+      if ($ck === 'cb' || $ck === 'title') continue;
+      $screen_columns[$ck] = trim(strip_tags((string)($cm['label'] ?? $ck))) ?: ucfirst($ck);
+    }
+    $screen_hidden = array_values(array_intersect((array)($screen_opts['hidden'] ?? []), array_keys($screen_columns)));
+    foreach ($screen_hidden as $ck) unset($cols_meta_for_query[$ck]);
+    // Extra yes/no settings a plugin adds for this list (see qp_get_screen_option())
+    $screen_extra = function_exists('apply_filters') ? apply_filters("manage_{$post_type}_screen_options", [], $post_type) : [];
+    $screen_extra = is_array($screen_extra) ? $screen_extra : [];
     $paged = max(1, (int)($_GET['paged'] ?? 1));
     $offset = ($paged - 1) * $per_page;
 
@@ -144,10 +183,14 @@ if (empty($action)) {
 
     // Final data query with ordering and LIMIT/OFFSET
     // LIMIT/OFFSET are inlined as integers to avoid drivers that quote bound values for LIMIT
-    $sql = "SELECT id, title, slug, status, created_at " . $base_sql . " " . $sql_order . " LIMIT " . intval($per_page) . " OFFSET " . intval($offset);
+    $data_from = "FROM " . table_name('posts') . ($sql_join !== '' ? ' ' . $sql_join : '') . substr($base_sql, strlen("FROM " . table_name('posts')));
+    $sql = "SELECT " . table_name('posts') . ".id, title, slug, status, created_at, published_at " . $data_from . " " . $sql_order . " LIMIT " . intval($per_page) . " OFFSET " . intval($offset);
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $posts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Lets a post type load what its columns need for the whole page at once instead of once per row
+    if ($posts && function_exists('do_action')) do_action('manage_posts_list_prefetch', $post_type, $posts);
 
     // Prepare visible taxonomies (only those with screen_list !== false) and their term lists
     $visible_taxonomies = [];
@@ -176,6 +219,7 @@ if (empty($action)) {
         <a class="btn btn-success" href="posts.php?post_type=<?= urlencode($post_type) ?>&action=add">Add New <?= htmlspecialchars($registered_post_types[$post_type]['label'] ?? ucfirst($post_type)) ?></a>
       </div>
       <div class="status-links">
+        <button type="button" class="btn btn-sm btn-outline-secondary me-3" id="screenOptionsToggle" aria-expanded="false" aria-controls="screenOptionsPanel">Screen Options &#9662;</button>
         <?php
           $base = 'posts.php?post_type=' . urlencode($post_type);
         ?>
@@ -183,6 +227,28 @@ if (empty($action)) {
          | <a href="<?= $base ?>&status=published" <?= $status === 'published' ? 'style="font-weight:600"' : '' ?>>Published (<?= $counts['published'] ?>)</a>
          | <a href="<?= $base ?>&status=draft" <?= $status === 'draft' ? 'style="font-weight:600"' : '' ?>>Draft (<?= $counts['draft'] ?>)</a>
          | <a href="<?= $base ?>&status=trash" <?= $status === 'trash' ? 'style="font-weight:600"' : '' ?>>Trash (<?= $counts['trash'] ?>)</a>
+      </div>
+    </div>
+
+    <div id="screenOptionsPanel" class="card card-body mb-3" style="display:none">
+      <strong class="mb-2">Columns</strong>
+      <div class="d-flex flex-wrap mb-3">
+        <?php foreach ($screen_columns as $ck => $clabel): ?>
+          <label class="me-4"><input type="checkbox" class="screen-col me-1" value="<?= htmlspecialchars($ck) ?>" <?= in_array($ck, $screen_hidden, true) ? '' : 'checked' ?>> <?= htmlspecialchars($clabel) ?></label>
+        <?php endforeach; ?>
+      </div>
+      <?php if ($screen_extra): ?>
+      <strong class="mb-2">Options</strong>
+      <div class="d-flex flex-wrap mb-3">
+        <?php foreach ($screen_extra as $ok => $odef): ?>
+          <label class="me-4"><input type="checkbox" class="screen-opt me-1" value="<?= htmlspecialchars($ok) ?>" <?= qp_get_screen_option($post_type, $ok, !empty($odef['default'])) ? 'checked' : '' ?>><?= htmlspecialchars((string)($odef['label'] ?? $ok)) ?></label>
+        <?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+      <div class="d-flex align-items-center">
+        <label for="screenPerPage" class="me-2 mb-0 ms-0">Items per page</label>
+        <input type="number" id="screenPerPage" class="form-control form-control-sm me-3" style="width:80px" min="5" max="200" value="<?= (int)$per_page_default ?>">
+        <button type="button" class="btn btn-sm btn-primary" id="screenOptionsApply">Apply</button>
       </div>
     </div>
 
@@ -244,7 +310,8 @@ if (empty($action)) {
       </form>
     </div>
 
-      <table class="table table-striped table-bordered table-responsive-md">
+      <?php if (function_exists('do_action')) do_action('manage_posts_list_styles', $post_type); ?>
+      <table class="table table-striped table-bordered table-responsive-md post-list-<?= htmlspecialchars($post_type) ?>">
         <thead class="thead-dark">
           <tr>
             <?php
@@ -256,6 +323,7 @@ if (empty($action)) {
                 'slug' => ['label' => 'Slug', 'class' => 'col-slug', 'sortable' => false],
                 'status' => ['label' => 'Status', 'class' => 'col-status', 'sortable' => false],
                 'created_at' => ['label' => 'Created At', 'class' => 'col-created', 'sortable' => true],
+                'published_at' => ['label' => 'Published At', 'class' => 'col-published', 'sortable' => true],
                 ];
 
                 // If the post-types helper exists, prefer its merged columns (supports position)
@@ -287,8 +355,9 @@ if (empty($action)) {
                   unset($cols_meta['id']);
                 }
 
-                // Allow plugins to change column meta (classes/labels/sortable)
-                if (function_exists('apply_filters')) {
+                // Column meta filters (classes/labels/sortable) were already applied with $cols_meta_for_query; only the
+                // fallback branch above, which does not use it, still needs them.
+                if (!isset($cols_meta_for_query) && function_exists('apply_filters')) {
                   $cols_meta = apply_filters("manage_{$post_type}_posts_columns_meta", $cols_meta, $post_type);
                   $cols_meta = apply_filters('manage_posts_columns_meta', $cols_meta, $post_type);
                 }
@@ -351,13 +420,24 @@ if (empty($action)) {
                           // Row actions under title (WP-style links)
                           $rowLinks = [];
                           if ($post['status'] === 'trash') {
-                            $rowLinks[] = '<a href="#" class="row-action-restore" data-id="' . htmlspecialchars($post['id']) . '">Restore</a>';
-                            $rowLinks[] = '<a href="#" class="row-action-delete-perm text-danger" data-id="' . htmlspecialchars($post['id']) . '">Delete Permanently</a>';
+                            $rowLinks['restore'] = '<a href="#" class="row-action-restore" data-id="' . htmlspecialchars($post['id']) . '">Restore</a>';
+                            $rowLinks['delete_permanently'] = '<a href="#" class="row-action-delete-perm text-danger" data-id="' . htmlspecialchars($post['id']) . '">Delete Permanently</a>';
                           } else {
-                            $rowLinks[] = '<a href="posts.php?post_type=' . urlencode($post_type) . '&action=edit&id=' . urlencode($post['id']) . '">Edit</a>';
-                            $rowLinks[] = '<a href="#" class="row-action-trash text-warning" data-id="' . htmlspecialchars($post['id']) . '">Move to Trash</a>';
+                            $rowLinks['edit'] = '<a href="posts.php?post_type=' . urlencode($post_type) . '&action=edit&id=' . urlencode($post['id']) . '">Edit</a>';
+                            // Public post types get a front-end link; only published posts resolve there
+                            if (!empty($registered_post_types[$post_type]['public']) && $post['status'] === 'published' && function_exists('get_the_permalink')) {
+                              $view_url = get_the_permalink($post_type, $post['slug']);
+                              if ($view_url) $rowLinks['view'] = '<a href="' . htmlspecialchars($view_url) . '" target="_blank" rel="noopener">View</a>';
+                            }
+                            $rowLinks['trash'] = '<a href="#" class="row-action-trash text-danger" data-id="' . htmlspecialchars($post['id']) . '">Trash</a>';
                           }
-                          echo '<div class="row-actions small" style="margin-top:6px">' . implode(' | ', $rowLinks) . '</div>';
+                          // Plugins add, remove or reorder links here. $rowLinks is key => HTML (keys: edit, view, trash, restore,
+                          // delete_permanently); $post is the list row (id, title, slug, status, ...). Escape what you add.
+                          if (function_exists('apply_filters')) {
+                            $rowLinks = apply_filters("{$post_type}_row_actions", $rowLinks, $post, $post_type);
+                            $rowLinks = apply_filters('post_row_actions', $rowLinks, $post, $post_type);
+                          }
+                          if (is_array($rowLinks) && $rowLinks) echo '<div class="row-actions small" style="margin-top:6px">' . implode(' | ', array_filter($rowLinks, 'is_string')) . '</div>';
                           break;
                         case 'slug':
                           echo htmlspecialchars($post['slug']);
@@ -370,6 +450,15 @@ if (empty($action)) {
                             echo htmlspecialchars(format_site_datetime($post['created_at']));
                           } else {
                             echo htmlspecialchars($post['created_at']);
+                          }
+                          break;
+                        case 'published_at':
+                          if (empty($post['published_at'])) {
+                            echo '&mdash;';
+                          } elseif (function_exists('format_site_datetime')) {
+                            echo htmlspecialchars(format_site_datetime($post['published_at']));
+                          } else {
+                            echo htmlspecialchars($post['published_at']);
                           }
                           break;
                         case 'actions':
@@ -411,6 +500,28 @@ if (empty($action)) {
     <script>
     jQuery(function($){
       var adminAjax = '<?= $admin_ajax_url ?>';
+
+      // Screen Options: save the columns and rows per page for this user, then reload without a per_page override
+      $('#screenOptionsToggle').on('click', function(){
+        $('#screenOptionsPanel').slideToggle(120);
+        $(this).attr('aria-expanded', $(this).attr('aria-expanded') === 'true' ? 'false' : 'true');
+      });
+      $('#screenOptionsApply').on('click', function(){
+        var hidden = $('.screen-col:not(:checked)').map(function(){ return this.value; }).get();
+        $.post(adminAjax, {
+          action: 'qp_save_screen_options',
+          post_type: '<?= htmlspecialchars($post_type, ENT_QUOTES) ?>',
+          per_page: $('#screenPerPage').val(),
+          hidden: hidden,
+          options: $('.screen-opt').map(function(){ return this.value + ':' + (this.checked ? 1 : 0); }).get()
+        }, function(resp){
+          if (resp && resp.status === 'success') {
+            var url = new URL(window.location.href);
+            url.searchParams.delete('per_page'); url.searchParams.delete('paged');
+            window.location.href = url.toString();
+          } else alert('Error: ' + (resp && resp.message ? resp.message : 'Unknown'));
+        }, 'json');
+      });
 
       // Per-row: move to trash
       $(document).on('click', '.btn-trash-post', function(){
@@ -544,7 +655,7 @@ if (empty($action)) {
       <input type="hidden" name="post_type" value="<?= htmlspecialchars($post_type) ?>" />
       <div class="row">
         <div class="col-md-8">
-          <div id="formResult" class="mt-3"></div>
+          <div id="formResult" class="mt-3"><?php if ($action === 'edit' && isset($_GET['saved'])): ?><div class="alert alert-success"><?= htmlspecialchars(qp_post_type_singular_label($post_type)) ?> added successfully</div><?php endif; ?></div>
           <?php if ($supports_has('title')): ?>
           <div class="form-group">
             <label>Title</label>
@@ -677,7 +788,8 @@ if (empty($action)) {
               <div class="mb-2">
                 
                 <div id="postStatusLine" class="d-flex justify-content-between align-items-center">
-                 <span id="postStatusLabel"><span class="d-inline">Status: </span><?= htmlspecialchars(ucfirst(str_replace('_',' ',$post_data['status'] ?? 'draft'))) ?></span>
+                 <?php $cur_status = $post_data['status'] ?? ($action === 'add' ? 'published' : 'draft'); ?>
+                 <span id="postStatusLabel"><span class="d-inline">Status: </span><span id="postStatusValue"><?= htmlspecialchars(ucfirst(str_replace('_',' ',$cur_status))) ?></span></span>
                   <?php if (($action === 'edit' && $post_id > 0) || $action === 'add'): ?>
                   <a href="#" id="postStatusEditLink">Edit</a>
                   <?php endif; ?>
@@ -686,7 +798,7 @@ if (empty($action)) {
                   <div class="d-flex">
                     <select name="status" id="postStatus" class="form-control">
                       <?php foreach (['draft','published','pending_review','scheduled'] as $statusOpt): ?>
-                        <option value="<?= $statusOpt ?>" <?= ($post_data['status'] ?? '') === $statusOpt ? 'selected' : '' ?>><?= ucfirst(str_replace('_',' ',$statusOpt)) ?></option>
+                        <option value="<?= $statusOpt ?>" <?= $cur_status === $statusOpt ? 'selected' : '' ?>><?= ucfirst(str_replace('_',' ',$statusOpt)) ?></option>
                       <?php endforeach; ?>
                     </select>
                     <div class="ms-2 d-flex">
@@ -1101,7 +1213,8 @@ if (empty($action)) {
       $(document).on('click', '#postStatusEditLink', function(e){ e.preventDefault();
         var $line = $('#postStatusLine');
         if ($line.find('.inline-control').length) return;
-        var $label = $('#postStatusLabel');
+        // Only the value is swapped for the editor; the "Status:" caption stays visible
+        var $label = $('#postStatusValue');
 
         // Clone the server-rendered edit block's inner container (keeps structure)
         var $controls = $('#postStatusEdit').find('> div').clone(true);
@@ -1378,7 +1491,7 @@ if (empty($action)) {
             if(resp.status === 'success') {
               $('#formResult').html('<div class="alert alert-success">'+resp.message+'</div>');
               if ('<?= $action ?>' === 'add' && resp.post_id) {
-                window.location.href = 'posts.php?post_type=<?= urlencode($post_type) ?>&action=edit&id=' + resp.post_id;
+                window.location.href = 'posts.php?post_type=<?= urlencode($post_type) ?>&action=edit&saved=1&id=' + resp.post_id;
               }
             } else {
               $('#formResult').html('<div class="alert alert-danger">'+resp.message+'</div>');

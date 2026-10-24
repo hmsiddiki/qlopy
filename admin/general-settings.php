@@ -64,6 +64,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Search (C1d): the mode is only a choice; the query falls back to LIKE until the index exists.
     $search_mode = ($_POST['search_mode'] ?? 'like') === 'fulltext' ? 'fulltext' : 'like';
     update_option_meta('qp_search_mode', $search_mode);
+    // Login sessions: how long a login lasts after the last visit, "remember me", and logins kept per user.
+    update_option_meta('qp_auth_settings', [
+        'session_ttl'  => max(1, min(30, (int)($_POST['auth_session_days'] ?? 2))) * 86400,
+        'remember_ttl' => max(1, min(365, (int)($_POST['auth_remember_days'] ?? 14))) * 86400,
+        'max_tokens'   => max(1, min(100, (int)($_POST['auth_max_tokens'] ?? 10))),
+    ]);
     // Scheduled tasks (C2): how due work gets run on this site.
     $cron_mode_post = $_POST['qp_cron_mode'] ?? 'worker';
     update_option_meta('qp_cron_mode', in_array($cron_mode_post, ['worker', 'after_response', 'ping', 'off'], true) ? $cron_mode_post : 'worker');
@@ -402,6 +408,25 @@ $site_week_start = intval(get_site_option($pdo, 'week_starts_on', 1));
             }
             ?>
         </select>
+    </div>
+
+    <?php $qp_auth_cfg = qp_auth_settings(); ?>
+    <h4 class="mt-4">Login sessions</h4>
+    <div class="form-row">
+        <div class="form-group col-md-4">
+            <label for="auth_session_days">Stay signed in for (days)</label>
+            <input type="number" min="1" max="30" class="form-control" id="auth_session_days" name="auth_session_days" value="<?= (int)round($qp_auth_cfg['session_ttl'] / 86400) ?>">
+            <small class="form-text text-muted">Counted from your last visit: every visit starts the count again.</small>
+        </div>
+        <div class="form-group col-md-4">
+            <label for="auth_remember_days">&ldquo;Remember me&rdquo; (days)</label>
+            <input type="number" min="1" max="365" class="form-control" id="auth_remember_days" name="auth_remember_days" value="<?= (int)round($qp_auth_cfg['remember_ttl'] / 86400) ?>">
+        </div>
+        <div class="form-group col-md-4">
+            <label for="auth_max_tokens">Sign-ins kept per user</label>
+            <input type="number" min="1" max="100" class="form-control" id="auth_max_tokens" name="auth_max_tokens" value="<?= (int)$qp_auth_cfg['max_tokens'] ?>">
+            <small class="form-text text-muted">When exceeded, the least recently used sign-in ends.</small>
+        </div>
     </div>
 
     <button type="submit" class="btn btn-primary">Save Settings</button>

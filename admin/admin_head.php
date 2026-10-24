@@ -131,49 +131,42 @@ if (file_exists($updater_file)) {
 // don't rely on PHP sessions/files. This allows removing the legacy session
 // handler and `data/` session storage once other session uses are migrated.
 if (!function_exists('qp_admin_create_nonce')) {
-    function qp_admin_create_nonce($action = 'default', int $ttl = 3600) {
+    // Form tokens last 12 hours (a form left open overnight still saves), are single-use, and are changed under a row lock so two tabs
+    // loading at the same moment cannot overwrite each other's token. At most 50 are kept per action.
+    function qp_admin_create_nonce($action = 'default', int $ttl = 43200) {
         $user = get_logged_in_user();
         if (empty($user) || empty($user['id'])) return '';
         try { $token = bin2hex(random_bytes(12)); } catch (Exception $e) { $token = bin2hex(openssl_random_pseudo_bytes(12)); }
-        $user_id = (int)$user['id'];
-        $nonces = get_user_meta($user_id, 'qp_nonces') ?? [];
-        if (!is_array($nonces)) $nonces = [];
         $now = time();
-        // prune expired tokens across all actions
-        foreach ($nonces as $act => $tokens) {
-            if (!is_array($tokens)) continue;
-            foreach ($tokens as $t => $exp) {
-                if ($exp < $now) unset($nonces[$act][$t]);
+        $res = qp_user_meta_mutate((int)$user['id'], 'qp_nonces', function ($nonces) use ($action, $token, $now, $ttl) {
+            foreach ($nonces as $act => $tokens) {          // prune expired tokens across all actions
+                if (!is_array($tokens)) { unset($nonces[$act]); continue; }
+                foreach ($tokens as $t => $exp) { if ($exp < $now) unset($nonces[$act][$t]); }
+                if (empty($nonces[$act])) unset($nonces[$act]);
             }
-            if (empty($nonces[$act])) unset($nonces[$act]);
-        }
-        $nonces[$action] = $nonces[$action] ?? [];
-        $nonces[$action][$token] = $now + (int)$ttl;
-        update_user_meta($user_id, 'qp_nonces', $nonces);
-        return $token;
+            $nonces[$action] = $nonces[$action] ?? [];
+            $nonces[$action][$token] = $now + $ttl;
+            if (count($nonces[$action]) > 50) { asort($nonces[$action]); $nonces[$action] = array_slice($nonces[$action], -50, null, true); }
+            return $nonces;
+        });
+        return $res === null ? '' : $token;
     }
     function qp_admin_verify_nonce($token, $action = 'default') {
-        if (empty($token)) return false;
+        if (empty($token) || !is_string($token)) return false;
         $user = get_logged_in_user();
         if (empty($user) || empty($user['id'])) return false;
-        $user_id = (int)$user['id'];
-        $nonces = get_user_meta($user_id, 'qp_nonces') ?? [];
-        if (!is_array($nonces) || empty($nonces[$action]) || !is_array($nonces[$action])) return false;
-        $tokens = $nonces[$action];
-        $now = time();
-        // remove expired tokens first
-        foreach ($tokens as $t => $exp) { if ($exp < $now) unset($tokens[$t]); }
-        if (empty($tokens)) { unset($nonces[$action]); update_user_meta($user_id, 'qp_nonces', $nonces); return false; }
-        if (!isset($tokens[$token])) { $nonces[$action] = $tokens; update_user_meta($user_id, 'qp_nonces', $nonces); return false; }
-        $exp = $tokens[$token];
-        if ($exp < $now) { unset($tokens[$token]); $nonces[$action] = $tokens; update_user_meta($user_id, 'qp_nonces', $nonces); return false; }
-        // consume this token
-        unset($tokens[$token]);
-        if (empty($tokens)) unset($nonces[$action]); else $nonces[$action] = $tokens;
-        update_user_meta($user_id, 'qp_nonces', $nonces);
-        return true;
+        $now = time(); $ok = false;
+        qp_user_meta_mutate((int)$user['id'], 'qp_nonces', function ($nonces) use ($token, $action, $now, &$ok) {
+            if (empty($nonces[$action]) || !is_array($nonces[$action]) || !isset($nonces[$action][$token])) return null;
+            $ok = $nonces[$action][$token] >= $now;
+            unset($nonces[$action][$token]);                 // consumed (or expired)
+            foreach ($nonces[$action] as $t => $exp) { if ($exp < $now) unset($nonces[$action][$t]); }
+            if (empty($nonces[$action])) unset($nonces[$action]);
+            return $nonces;
+        });
+        return $ok;
     }
-    function qp_nonce_field($action = 'default', int $ttl = 3600) {
+    function qp_nonce_field($action = 'default', int $ttl = 43200) {
         $t = qp_admin_create_nonce($action, $ttl);
         echo '<input type="hidden" name="_qp_nonce" value="' . htmlspecialchars($t) . '">';
     }
@@ -200,6 +193,15 @@ if (!function_exists('qp_set_admin_notice')) {
 
 
 if (!is_logged_in() && (!check_permission('manage_options') || !check_permission('manage_posts') || !check_permission('manage_users') || !check_permission('manage_themes') || !check_permission('manage_plugins') || !check_permission('manage_admin_pages') || !check_permission('manage_comments') || !check_permission('publish_posts'))) {
+    // A script (admin/ajax.php, or any fetch/XHR) must be told "not signed in" with a 403, not be sent to the login page: it would follow the
+    // redirect, receive HTML and carry on as if all were well. The open admin page answers a 403 with its sign-in box (assets/js/qp-session.js).
+    if (basename($_SERVER['SCRIPT_NAME'] ?? '') === 'ajax.php' || strcasecmp((string)($_SERVER['HTTP_X_REQUESTED_WITH'] ?? ''), 'XMLHttpRequest') === 0) {
+        http_response_code(403);
+        while (ob_get_level()) { ob_end_clean(); }
+        header('Content-Type: application/json');
+        echo json_encode(['status' => 'error', 'message' => 'Access denied', 'code' => 'session_expired']);
+        exit;
+    }
     header('Location: login.php');
     exit;
 }
@@ -341,7 +343,8 @@ if (function_exists('enqueue_admin_script')) {
    enqueue_admin_style('bootstrap-css', 'assets/bt_4.6.2/css/bootstrap.min.css', [], '4.6.2', 'all');
    enqueue_admin_script('popper-js', 'assets/js/popper.min.js', ['admin-jquery'], '4.6.6', true);
    enqueue_admin_script('bootstrap', 'assets/bt_4.6.2/js/bootstrap.bundle.min.js', ['admin-jquery'], '4.6.2', true);
-   enqueue_admin_script('admin-js', 'assets/js/admin.js', ['admin-jquery'], $asset_ver, true); 
+   enqueue_admin_script('admin-js', 'assets/js/admin.js', ['admin-jquery'], $asset_ver, true);
+   enqueue_admin_script('qp-session', 'assets/js/qp-session.js', [], (string)@filemtime(__DIR__ . '/assets/js/qp-session.js'), true);
    enqueue_admin_style('qp-css', 'assets/css/qp.css', [], '3.0', 'all');
    enqueue_admin_style('qpmodal-css', 'assets/css/qpmodal.css', [], $asset_ver, 'all');
       $screen = current_admin_screen();
