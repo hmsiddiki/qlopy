@@ -6883,6 +6883,8 @@ function qp_delete_user(int $user_id): bool {
         $stmt->execute([$user_id]);
         $deleted = $stmt->rowCount() > 0;
         if ($started) $pdo->commit();
+        // Plugins that keep their own rows for an account (a saved list, a log) remove them here.
+        if ($deleted && function_exists('do_action')) do_action('qp_user_deleted', $user_id);
         return $deleted;
     } catch (Throwable $e) {
         if ($started && $pdo->inTransaction()) $pdo->rollBack();
