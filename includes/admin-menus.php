@@ -69,6 +69,7 @@ register_admin_menu('cron', 'Cron', $admin_dir_path . 'cron.php', null, 'setting
 register_admin_menu('updates', 'Updates', $admin_dir_path . 'updates.php', null, 'settings', 'updates');
 register_admin_menu('seo', 'SEO', $admin_dir_path . 'seo.php', null, 'settings', 'seo');
 register_admin_menu('api', 'API', $admin_dir_path . 'api.php', null, 'settings', 'api');
+register_admin_menu('transfer', 'Import / Export', $admin_dir_path . 'transfer.php', null, 'settings', 'transfer');
 
 // Discussion (comments) settings
 register_admin_menu('discussion', 'Discussion', $admin_dir_path . 'discussion.php', null, 'settings', 'discussion');

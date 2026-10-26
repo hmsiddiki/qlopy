@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // Example plugin updater declaration for `example-plugin`
 // This file would be provided by plugin authors. It should call
 // `set_plugin_updater($folder, $current_version, $manifest_url)`

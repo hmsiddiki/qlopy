@@ -296,8 +296,10 @@ function qpmeta_render_metaboxes($object_type, $object_id = null, $option_prefix
         }
         
         if ($is_option) {
-            echo '<input type="submit" value="Save"/>';
+            echo '<div class="mt-4">';
+            echo '<button type="submit" class="btn btn-primary">Save</button>';
             echo '<span class="qpmeta-msg" style="margin-left:1em;color:#c00;"></span>';
+            echo '</div>';
         }
         
         echo '</fieldset>';
@@ -462,8 +464,10 @@ function qpmeta_render_metaboxes_in_context($object_type, $object_id = null, $co
         }
         
         if ($is_option) {
-            echo '<input type="submit" value="Save"/>';
+            echo '<div class="mt-4">';
+            echo '<button type="submit" class="btn btn-primary">Save</button>';
             echo '<span class="qpmeta-msg" style="margin-left:1em;color:#c00;"></span>';
+            echo '</div>';
         }
         
         echo '</fieldset>';
@@ -1493,7 +1497,7 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_add_
             $line = date('c') . " - content__i18n: " . json_encode($req['content__i18n'] ?? null, JSON_UNESCAPED_UNICODE) . "\n";
             $tmp = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'qp_multilang_debug.log';
             @file_put_contents($tmp, $line, FILE_APPEND | LOCK_EX);
-            $uploads_dir = realpath(__DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'uploads') ?: (__DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'uploads');
+            $uploads_dir = function_exists('qp_uploads_base') ? qp_uploads_base() : (__DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'uploads');
             if (!is_dir($uploads_dir)) @mkdir($uploads_dir, 0755, true);
             $uploads = rtrim($uploads_dir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'qp_multilang_debug.log';
             @file_put_contents($uploads, $line, FILE_APPEND | LOCK_EX);
@@ -1665,7 +1669,7 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_upda
             $line = date('c') . " - content__i18n: " . json_encode($req['content__i18n'] ?? null, JSON_UNESCAPED_UNICODE) . "\n";
             $tmp = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'qp_multilang_debug.log';
             @file_put_contents($tmp, $line, FILE_APPEND | LOCK_EX);
-            $uploads_dir = realpath(__DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'uploads') ?: (__DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'uploads');
+            $uploads_dir = function_exists('qp_uploads_base') ? qp_uploads_base() : (__DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'uploads');
             if (!is_dir($uploads_dir)) @mkdir($uploads_dir, 0755, true);
             $uploads = rtrim($uploads_dir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'qp_multilang_debug.log';
             @file_put_contents($uploads, $line, FILE_APPEND | LOCK_EX);

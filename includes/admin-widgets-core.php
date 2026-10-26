@@ -88,7 +88,10 @@ register_admin_widget('site_health', [
         if (function_exists('qp_cron_mode')) {
             $mode = qp_cron_mode();
             $due = function_exists('qp_cron_next_due') ? qp_cron_next_due() : null;
-            if ($mode === 'off') $add('warn', 'Scheduled tasks', 'Switched off in Settings: scheduled posts and queued mail will not run.');
+            $st = function_exists('qp_cron_state') ? qp_cron_state() : [];
+            $runnerFresh = !empty($st['runner_at']) && (time() - (int)$st['runner_at']) < 900;
+            if ($runnerFresh && ($mode === 'off' || $mode === 'ping')) $add('ok', 'Scheduled tasks', 'Run by ' . (string)($st['runner'] ?? 'server crontab') . ' (last run ' . max(0, (int)((time() - (int)$st['runner_at']) / 60)) . ' min ago)');
+            elseif ($mode === 'off') $add('warn', 'Scheduled tasks', 'Switched off in Settings and no server crontab has reported in for 15 minutes: scheduled posts and queued mail will not run.');
             elseif ($due !== null && $due < time() - 900) $add('warn', 'Scheduled tasks', 'Overdue by ' . max(1, (int)((time() - $due) / 60)) . ' minutes. See Settings > Cron.');
             else $add('ok', 'Scheduled tasks', 'Mode: ' . $mode);
         }

@@ -4110,6 +4110,9 @@ function qp_handle_upload(array $file, ?int $post_author_id = null, array $optio
     $metaStmt = $pdo->prepare('INSERT INTO ' . table_name('post_meta') . ' (post_id, meta_key, meta_value) VALUES (?,?,?)');
     $metaStmt->execute([$post_id, '_file_metadata', json_encode($meta)]);
 
+    // Size urls are stored relative to the configured uploads dir (like file.url); the base is added when printing
+    $relDir = dirname($relative) === '.' ? '' : dirname($relative) . '/';
+
     // Generate default image sizes only for images, name derivatives with actual dimensions
     if (!$skip_sizes && str_starts_with($mime, 'image/') && qp_image_editor_available()) {
         foreach (qp_get_image_sizes() as $sizeName => $sizeData) {
@@ -4135,7 +4138,7 @@ function qp_handle_upload(array $file, ?int $post_author_id = null, array $optio
             $finalPath = $dir . DIRECTORY_SEPARATOR . $baseName . '-' . $finalW . 'x' . $finalH . '.' . $ext;
             if (file_exists($finalPath)) {
                 // reuse existing final file
-                $urlDeriv = dirname($url) . '/' . basename($finalPath);
+                $urlDeriv = $relDir . basename($finalPath);
                 $meta['sizes'][$sizeName] = ['path' => $finalPath, 'url' => $urlDeriv, 'width' => $finalW, 'height' => $finalH];
                 continue;
             }
@@ -4156,10 +4159,10 @@ function qp_handle_upload(array $file, ?int $post_author_id = null, array $optio
                             $i = 1; do { $finalP = $dir . DIRECTORY_SEPARATOR . $baseName . '-' . $w . 'x' . $h . '-' . $i . '.' . $ext; $i++; } while (file_exists($finalP));
                         }
                         @rename($tempPath, $finalP);
-                        $urlDeriv = dirname($url) . '/' . basename($finalP);
+                        $urlDeriv = $relDir . basename($finalP);
                         $meta['sizes'][$sizeName] = ['path' => $finalP, 'url' => $urlDeriv, 'width' => $w, 'height' => $h];
                     } else {
-                        $urlDeriv = dirname($url) . '/' . basename($tempPath);
+                        $urlDeriv = $relDir . basename($tempPath);
                         $meta['sizes'][$sizeName] = ['path' => $tempPath, 'url' => $urlDeriv];
                     }
                 }
@@ -4168,7 +4171,7 @@ function qp_handle_upload(array $file, ?int $post_author_id = null, array $optio
                 // re-check after acquiring lock
                 if (file_exists($finalPath)) {
                     flock($lockFp, LOCK_UN); fclose($lockFp); @unlink($lockPath);
-                    $urlDeriv = dirname($url) . '/' . basename($finalPath);
+                    $urlDeriv = $relDir . basename($finalPath);
                     $meta['sizes'][$sizeName] = ['path' => $finalPath, 'url' => $urlDeriv, 'width' => $finalW, 'height' => $finalH];
                     continue;
                 }
@@ -4183,10 +4186,10 @@ function qp_handle_upload(array $file, ?int $post_author_id = null, array $optio
                             $i = 1; do { $finalP = $dir . DIRECTORY_SEPARATOR . $baseName . '-' . $w . 'x' . $h . '-' . $i . '.' . $ext; $i++; } while (file_exists($finalP));
                         }
                         @rename($tempPath, $finalP);
-                        $urlDeriv = dirname($url) . '/' . basename($finalP);
+                        $urlDeriv = $relDir . basename($finalP);
                         $meta['sizes'][$sizeName] = ['path' => $finalP, 'url' => $urlDeriv, 'width' => $w, 'height' => $h];
                     } else {
-                        $urlDeriv = dirname($url) . '/' . basename($tempPath);
+                        $urlDeriv = $relDir . basename($tempPath);
                         $meta['sizes'][$sizeName] = ['path' => $tempPath, 'url' => $urlDeriv];
                     }
                 }
@@ -6893,4 +6896,11 @@ if (function_exists('qp_option_raw') && !defined('QP_REST_REQUEST_NO_HOOKS')) {
     $qp_wh = qp_option_raw('qp_webhooks');
     if (is_string($qp_wh) && strlen($qp_wh) > 4) require_once __DIR__ . '/includes/webhooks.php';
     unset($qp_wh);
+}
+
+// Import and export engine (C8): loaded only while a run is waiting, so the scheduled task that carries it on has its handler. Nothing otherwise.
+if (function_exists('qp_option_raw') && !defined('QP_REST_REQUEST_NO_HOOKS')) {
+    $qp_tr = qp_option_raw('qp_transfer_active');
+    if ($qp_tr === '1' || $qp_tr === 1) require_once __DIR__ . '/includes/transfer.php';
+    unset($qp_tr);
 }

@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /*
 Plugin Name: Example Plugin
 Plugin URI: https://example.local/qpm/sample-plugin
