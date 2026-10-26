@@ -147,7 +147,7 @@
                         var title = (it.title||'');
                         var u = (url||'').split('?')[0];
                         var ext = (it.extension || (u.split('.').pop()||'')).toLowerCase();
-                        if (['jpg','jpeg','png','gif','webp','bmp','svg'].indexOf(ext) !== -1) {
+                        if (['jpg','jpeg','png','gif','webp','avif','bmp','svg'].indexOf(ext) !== -1) {
                           ins += '<img src="'+ url.replace(/"/g,'\\"') +'" alt="'+ (title.replace?title.replace(/"/g,'\\"') : '') +'" />';
                         } else if (url) {
                           ins += '[embed]'+ url +'[/embed]';
@@ -205,7 +205,7 @@
                       var title = (it.title||'');
                       var u = (url||'').split('?')[0];
                       var ext = (it.extension || (u.split('.').pop()||'')).toLowerCase();
-                      if (['jpg','jpeg','png','gif','webp','bmp','svg'].indexOf(ext) !== -1) {
+                      if (['jpg','jpeg','png','gif','webp','avif','bmp','svg'].indexOf(ext) !== -1) {
                         ins += '<img src="'+ url.replace(/"/g,'\\"') +'" alt="'+ (title.replace?title.replace(/"/g,'\\"') : '') +'" />';
                       } else if (url) {
                         ins += '[embed]'+ url +'[/embed]';

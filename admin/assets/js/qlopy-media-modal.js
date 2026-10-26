@@ -21,7 +21,7 @@
       + '<div style="margin-bottom:8px;"><button class="btn btn-sm btn-primary qpmedia-tab-library">Library</button> <button class="btn btn-sm btn-outline-secondary qpmedia-tab-upload">Upload</button></div>'
       + '<div class="qpmedia-upload-area" style="display:none;">'
       + '<div class="qpmedia-upload-dropbox" style="border:2px dashed #bbb;border-radius:6px;padding:18px;text-align:center;cursor:pointer;">'
-      + 'Click or drop files here to upload<br><small class="text-muted qpmedia-allowed">Allowed: images (.jpg .jpeg .png .gif .webp)</small>'
+      + 'Click or drop files here to upload<br><small class="text-muted qpmedia-allowed">Allowed: images (.jpg .jpeg .png .gif .webp .avif)</small>'
       + '</div>'
       + '<input type="file" class="qpmedia-upload-input" multiple style="display:none;">'
       + '<div class="qpmedia-upload-status small text-muted mt-2" style="margin-top:8px;"></div>'
@@ -182,7 +182,7 @@
             if (!ext && it.url) {
               try { ext = (it.url.split('?')[0].split('.').pop()||'').toLowerCase(); } catch(e) { ext = ''; }
             }
-            var imageExts = ['jpg','jpeg','png','gif','webp','bmp','svg'];
+            var imageExts = ['jpg','jpeg','png','gif','webp','avif','bmp','svg'];
             // if extension is an image type and url exists, use the URL as the thumbnail
             if (ext && imageExts.indexOf(ext) !== -1 && it.url) {
               thumb = it.url;
@@ -322,14 +322,14 @@
 
     // adjust allowed types and UI text based on fileMode
     var allowedText = 'Allowed: any file type';
-    var imageExts = ['jpg','jpeg','png','gif','webp','bmp','svg'];
+    var imageExts = ['jpg','jpeg','png','gif','webp','avif','bmp','svg'];
     if (allowedExts === null) {
       // no custom accept/extensions provided — fall back to fileMode behavior
       if (opts.fileMode === 'images') {
         // images only
         allowedExts = imageExts.slice();
         $uploadInput.attr('accept','image/*');
-        allowedText = 'Allowed: images (.jpg .jpeg .png .gif .webp .svg)';
+        allowedText = 'Allowed: images (.jpg .jpeg .png .gif .webp .avif .svg)';
         $m.find('.qpmedia-allowed').text(allowedText);
       } else {
         // fileMode === 'all' — ask server for allowed extensions to display and use for validation

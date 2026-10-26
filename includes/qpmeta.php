@@ -758,7 +758,7 @@ function qpmeta_field_control($type, $name, $value, $field) {
             $allowed_text = 'Allowed: any file type';
             if ($filetype === 'images') {
                 $accept_attr = " accept=\"image/*\"";
-                $allowed_text = 'Allowed: images (.jpg .jpeg .png .gif .webp)';
+                $allowed_text = 'Allowed: images (.jpg .jpeg .png .gif .webp .avif)';
             } elseif (is_string($filetype) && strlen(trim($filetype)) && strtolower($filetype) !== 'all') {
                 // parse comma separated extensions
                 $parts = preg_split('/\s*,\s*/', $filetype);
@@ -828,7 +828,7 @@ function qpmeta_field_control($type, $name, $value, $field) {
             echo "<input type='hidden' name='" . htmlspecialchars($name) . "_id' value='" . htmlspecialchars(json_encode($ids)) . "' class='qpmeta-file-id'>";
             $btn_label = 'Select images';
             $field_name_attr = isset($field['id']) ? $field['id'] : $name;
-            echo "<div style='margin-bottom:6px;'><button type='button' class='btn btn-sm btn-outline-secondary qpmeta-open-modal' data-field-name='" . htmlspecialchars($field_name_attr) . "' data-storage-id='" . (isset($field['storage_id']) ? htmlspecialchars($field['storage_id']) : '') . "' data-multiple='1' data-filetype='" . htmlspecialchars($filetype) . "' data-input-type='filesortable'>" . htmlspecialchars($btn_label) . "</button> <span class='small text-muted qpmeta-file-hint'>Allowed: images (.jpg .jpeg .png .gif .webp)</span></div>";
+            echo "<div style='margin-bottom:6px;'><button type='button' class='btn btn-sm btn-outline-secondary qpmeta-open-modal' data-field-name='" . htmlspecialchars($field_name_attr) . "' data-storage-id='" . (isset($field['storage_id']) ? htmlspecialchars($field['storage_id']) : '') . "' data-multiple='1' data-filetype='" . htmlspecialchars($filetype) . "' data-input-type='filesortable'>" . htmlspecialchars($btn_label) . "</button> <span class='small text-muted qpmeta-file-hint'>Allowed: images (.jpg .jpeg .png .gif .webp .avif)</span></div>";
             echo "<div class='qpmeta-file-preview qpmeta-filesortable' style='margin-top:10px;'>";
             foreach ($ids as $attachment_id) {
                 if ($attachment_id && function_exists('qp_get_attachment_metadata')) {

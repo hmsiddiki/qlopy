@@ -2143,7 +2143,7 @@ add_action('qp_media_delete', function($req) {
 
     // Also remove generated derivatives for image attachments only.
     $is_image = false;
-    $img_exts = ['jpg','jpeg','png','gif','webp','bmp','tiff','svg'];
+    $img_exts = ['jpg','jpeg','png','gif','webp','avif','bmp','tiff','svg'];
     $fileExt = strtolower($meta['file']['ext'] ?? pathinfo($mainPath ?: '', PATHINFO_EXTENSION));
     $mime = $meta['file']['mime'] ?? '';
     if ($mime && stripos($mime, 'image/') === 0) $is_image = true;
@@ -2201,7 +2201,7 @@ add_action('qp_media_bulk_delete', function($req) {
             
             // remove generated derivatives for image attachments only
             $is_image = false;
-            $img_exts = ['jpg','jpeg','png','gif','webp','bmp','tiff','svg'];
+            $img_exts = ['jpg','jpeg','png','gif','webp','avif','bmp','tiff','svg'];
             $fileExt = strtolower($meta['file']['ext'] ?? pathinfo($mainPath ?: '', PATHINFO_EXTENSION));
             $mime = $meta['file']['mime'] ?? '';
             if ($mime && stripos($mime, 'image/') === 0) $is_image = true;
@@ -2271,7 +2271,7 @@ add_action('qp_media_list', function($req) {
             // extension/url occurrences in the stored JSON. Some metadata rows
             // may not have the mime key within the first bytes, so searching for
             // extensions is more reliable across legacy entries.
-            $exts = ['jpg','jpeg','png','gif','webp','svg','bmp','tiff'];
+            $exts = ['jpg','jpeg','png','gif','webp','avif','svg','bmp','tiff'];
             $orParts = [];
             foreach ($exts as $e) {
                 $orParts[] = "meta_value LIKE ?"; // ext field
@@ -3903,6 +3903,7 @@ function qp_allowed_mimes(): array {
         'image/png' => ['png'],
         'image/gif' => ['gif'],
         'image/webp' => ['webp'],
+        'image/avif' => ['avif'],
         'application/pdf' => ['pdf'],
         'application/msword' => ['doc'],
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => ['docx'],
@@ -4375,6 +4376,7 @@ function qp_generate_image_size(string $sourcePath, string $destPath, int $targe
         case 'image/png': $src = imagecreatefrompng($sourcePath); break;
         case 'image/gif': $src = imagecreatefromgif($sourcePath); break;
         case 'image/webp': $src = function_exists('imagecreatefromwebp') ? imagecreatefromwebp($sourcePath) : null; break;
+        case 'image/avif': $src = function_exists('imagecreatefromavif') ? imagecreatefromavif($sourcePath) : null; break;
         default: return false;
     }
     if (!$src) return false;
@@ -4389,14 +4391,14 @@ function qp_generate_image_size(string $sourcePath, string $destPath, int $targe
         else { $newWidth = $width; $newHeight = (int)round($width / $dstRatio); $srcX = 0; $srcY = (int)(($height - $newHeight) / 2); }
         $dst = imagecreatetruecolor($targetW, $targetH);
         // Preserve transparency backgrounds for PNG/WebP/GIF
-        if (in_array($mime, ['image/png','image/webp'], true)) { imagealphablending($dst, false); imagesavealpha($dst, true); $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127); imagefilledrectangle($dst, 0, 0, $targetW, $targetH, $transparent); }
+        if (in_array($mime, ['image/png','image/webp','image/avif'], true)) { imagealphablending($dst, false); imagesavealpha($dst, true); $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127); imagefilledrectangle($dst, 0, 0, $targetW, $targetH, $transparent); }
         elseif ($mime === 'image/gif') { $ti = imagecolortransparent($src); if ($ti >= 0) { $tc = imagecolorsforindex($src, $ti); $tid = imagecolorallocate($dst, $tc['red'], $tc['green'], $tc['blue']); imagefill($dst, 0, 0, $tid); imagecolortransparent($dst, $tid); } }
         imagecopyresampled($dst, $src, 0, 0, $srcX, $srcY, $targetW, $targetH, $newWidth, $newHeight);
     } else {
         $scale = min($targetW / $width, $targetH / $height);
         $newW = (int)round($width * $scale); $newH = (int)round($height * $scale);
         $dst = imagecreatetruecolor($newW, $newH);
-        if (in_array($mime, ['image/png','image/webp'], true)) { imagealphablending($dst, false); imagesavealpha($dst, true); $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127); imagefilledrectangle($dst, 0, 0, $newW, $newH, $transparent); }
+        if (in_array($mime, ['image/png','image/webp','image/avif'], true)) { imagealphablending($dst, false); imagesavealpha($dst, true); $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127); imagefilledrectangle($dst, 0, 0, $newW, $newH, $transparent); }
         elseif ($mime === 'image/gif') { $ti = imagecolortransparent($src); if ($ti >= 0) { $tc = imagecolorsforindex($src, $ti); $tid = imagecolorallocate($dst, $tc['red'], $tc['green'], $tc['blue']); imagefill($dst, 0, 0, $tid); imagecolortransparent($dst, $tid); } }
         imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $width, $height);
     }
@@ -4407,6 +4409,7 @@ function qp_generate_image_size(string $sourcePath, string $destPath, int $targe
         case 'image/png': imagesavealpha($dst, true); $ok = imagepng($dst, $destPath, 6); break;
         case 'image/gif': $ok = imagegif($dst, $destPath); break;
         case 'image/webp': $ok = function_exists('imagewebp') ? imagewebp($dst, $destPath, 85) : false; break;
+        case 'image/avif': $ok = function_exists('imageavif') ? imageavif($dst, $destPath, 75) : false; break;
     }
     imagedestroy($src); imagedestroy($dst);
     return $ok;
@@ -6284,7 +6287,7 @@ function qp_delete_attachment(int $post_id): bool {
 
     // If mainPath is known, attempt to remove generated derivative images using glob
     if ($mainPath && is_file($mainPath)) {
-        $img_exts = ['jpg','jpeg','png','gif','webp','bmp','tiff','svg'];
+        $img_exts = ['jpg','jpeg','png','gif','webp','avif','bmp','tiff','svg'];
         $dir = dirname($mainPath);
         $baseName = pathinfo($mainPath, PATHINFO_FILENAME);
         foreach ($img_exts as $extItem) {
