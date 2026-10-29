@@ -36,4 +36,21 @@ if (!function_exists('update_option_meta')) {
     }
 }
 
+// Folder-name helpers (the same ones auth.php defines for web requests). The cron runner never loads
+// auth.php, so updater.php's qp_content_dir()/qp_themes_dir()/... were undefined here and every
+// qlopy_update_checker run failed with "Call to undefined function qp_content_dir()".
+if (!function_exists('qp_dir_name')) {
+    function qp_dir_name(string $key): string {
+        static $defaults = ['admin_dir' => 'admin', 'content_dir' => 'content', 'themes_dir' => 'themes', 'plugins_dir' => 'plugins', 'uploads_dir' => 'uploads'];
+        $cfg = $GLOBALS['config'] ?? (function_exists('get_config') ? get_config() : []);
+        $v = is_array($cfg) ? ($cfg[$key] ?? null) : null;
+        return (is_string($v) && $v !== '.' && $v !== '..' && preg_match('/^[A-Za-z0-9_.-]+$/', $v)) ? $v : ($defaults[$key] ?? '');
+    }
+    function qp_admin_dir(): string { return qp_dir_name('admin_dir'); }
+    function qp_content_dir(): string { return qp_dir_name('content_dir'); }
+    function qp_themes_dir(): string { return qp_dir_name('themes_dir'); }
+    function qp_plugins_dir(): string { return qp_dir_name('plugins_dir'); }
+    function qp_uploads_dirname(): string { return qp_dir_name('uploads_dir'); }
+}
+
 // End of cli-helpers.php
