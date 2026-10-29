@@ -861,6 +861,7 @@ function qpmeta_field_control($type, $name, $value, $field) {
             // Admin-only rich text editor field; initialized by editor-init.js (TinyMCE)
             // Optional 'value_filter' (callable) shapes the stored value for the editor, e.g. plain lines saved before the field was rich text
             if (!empty($field['value_filter']) && is_callable($field['value_filter'])) $value = (string)call_user_func($field['value_filter'], $value);
+            if (function_exists('qp_require_editor')) qp_require_editor();
             echo "<textarea name='" . htmlspecialchars($name) . "' class='form-control qpmeta-richtext' rows='8'>" . htmlspecialchars($value) . "</textarea>";
             break;
         case 'tags':

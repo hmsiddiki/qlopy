@@ -50,10 +50,8 @@
         // Repeatable remove
         $(document).on('click', '.qpmeta-repeat-remove', function(e) {
             var group = $(this).closest('.qpmeta-repeat-group');
-            if (group.find('.qpmeta-repeat-item:not(.qpmeta-repeatable-prototype)').length > 1) {
-                $(this).closest('.qpmeta-repeat-item').remove();
-                try { updateRepeatHeaders(group, true); } catch(e) {}
-            }
+            $(this).closest('.qpmeta-repeat-item').remove();
+            try { updateRepeatHeaders(group, true); } catch(e) {}
             e.preventDefault();
         });
 

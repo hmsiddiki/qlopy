@@ -335,7 +335,7 @@ add_admin_action('admin_enqueue_menus', function($screen) {
 
 // Enqueue core admin assets: jQuery in header, qpmeta-tags in footer
 if (function_exists('enqueue_admin_script')) {
-    $asset_ver = time(); // Bust cache every request
+    $asset_ver = defined('QLOPY_VERSION') ? QLOPY_VERSION : '1'; // used when the 'admin_assets_query' filter is true; default mode uses file mtime
     enqueue_admin_script('admin-jquery', 'assets/js/jquery.min.js', [], '1.12.4', false);
         // Nestable (drag/drop) assets from CDN
       //  enqueue_admin_style('nestable', 'https://cdn.jsdelivr.net/npm/nestable2@1.6.0/jquery.nestable.min.css', [], $asset_ver, 'all');
@@ -370,19 +370,16 @@ if (function_exists('enqueue_admin_script')) {
         enqueue_admin_script('taxonomy-terms-sortable-init', 'assets/js/taxonomy-sortable-init.js', ['admin-jquery','qp-sortable'], $asset_ver, true);
     }
     
-    // Ensure this loads after bootstrap and admin.js which are already in footer
-    enqueue_admin_script('qlopy-media-modal', 'assets/js/qlopy-media-modal.js', ['admin-jquery','bootstrap','admin-js'], $asset_ver, true);
-    // Centralized QPMeta admin behaviors (repeatables, file handling, modal integration)
-    // Ensure lightweight sortable is available for repeatable panels
-    enqueue_admin_script('qp-sortable', 'assets/js/qp-sortable.js', ['admin-jquery'], $asset_ver, true);
-    enqueue_admin_script('qpmeta-admin', 'assets/js/qpmeta-admin.js', ['admin-jquery','qp-sortable'], $asset_ver, true);
-    // qpmeta `repeatable_row` field (add/remove/reorder rows)
-    enqueue_admin_script('qpmeta-rows', 'assets/js/qpmeta-rows.js', [], $asset_ver, true);
-    // TinyMCE core - use non-minified for debugging
-    enqueue_admin_script('tinymce', 'assets/js/tinymce/tinymce.js', ['admin-jquery'], $asset_ver, true);
-    // Editor initializer for post content + QPMeta richtext fields
-    enqueue_admin_script('editor-init', 'assets/js/editor-init.js', ['admin-jquery','tinymce'], $asset_ver, true);
-    enqueue_admin_script('qpmodal-js', 'assets/js/qpmodal.js', ['admin-jquery'], $asset_ver, true);
+        // Ensure this loads after bootstrap and admin.js which are already in footer
+        enqueue_admin_script('qlopy-media-modal', 'assets/js/qlopy-media-modal.js', ['admin-jquery','bootstrap','admin-js'], $asset_ver, true);
+        // Centralized QPMeta admin behaviors (repeatables, file handling, modal integration)
+        // Ensure lightweight sortable is available for repeatable panels
+        enqueue_admin_script('qp-sortable', 'assets/js/qp-sortable.js', ['admin-jquery'], $asset_ver, true);
+        enqueue_admin_script('qpmeta-admin', 'assets/js/qpmeta-admin.js', ['admin-jquery','qp-sortable'], $asset_ver, true);
+        // qpmeta `repeatable_row` field (add/remove/reorder rows)
+        enqueue_admin_script('qpmeta-rows', 'assets/js/qpmeta-rows.js', [], $asset_ver, true);
+        // TinyMCE + editor-init are enqueued on demand by qp_require_editor() (called where a richtext field renders)
+        enqueue_admin_script('qpmodal-js', 'assets/js/qpmodal.js', ['admin-jquery'], $asset_ver, true);
 }
 
 // Enqueue QPMeta tags UI on post edit/create screens so tag suggestions work

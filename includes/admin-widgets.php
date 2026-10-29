@@ -311,33 +311,6 @@ if (function_exists('add_admin_action')) {
         if (function_exists('qp_cache_flush_group')) qp_cache_flush_group('qp_admin_widgets');
         qp_admin_dash_json(['status' => 'success']);
     });
-    add_admin_action('iitcm_admin_ajax_qpw_quick_draft', function ($r) {
-        $req = qp_admin_dash_guard();
-        if (!current_user_can('manage_posts')) qp_admin_dash_json(['status' => 'error', 'message' => 'No permission.'], 403);
-        $title = mb_substr(trim(strip_tags((string)($req['title'] ?? ''))), 0, 200);
-        // Rich text from the editor: keep safe HTML (the core allow-list filter); plain text becomes paragraphs.
-        $raw = trim((string)($req['content'] ?? ''));
-        $safe = function_exists('qp_kses_post') ? trim((string)qp_kses_post($raw)) : trim(strip_tags($raw, '<p><br><strong><em><b><i><u><ul><ol><li><a><h2><h3><h4><blockquote>'));
-        $content = trim(html_entity_decode(strip_tags(preg_replace('~</(p|li|div|h[1-6]|blockquote)>|<br\s*/?>~i', "
-", $safe)), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
-        if ($title === '' && $content === '') qp_admin_dash_json(['status' => 'error', 'message' => 'Write a title or some text first.'], 422);
-        if ($title === '') $title = mb_substr($content, 0, 60);
-        $base = trim(preg_replace('/[^a-z0-9]+/', '-', strtolower((function_exists('iconv') ? iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $title) : false) ?: $title)), '-') ?: 'draft';
-        $pdo = db();
-        $T = table_name('posts');
-        $slug = $base; $n = 1;
-        $chk = $pdo->prepare("SELECT 1 FROM $T WHERE slug = ? LIMIT 1");
-        while (true) { $chk->execute([$slug]); if (!$chk->fetchColumn()) break; $slug = $base . '-' . (++$n); if ($n > 200) { $slug = $base . '-' . bin2hex(random_bytes(3)); break; } }
-        $u = get_logged_in_user();
-        $hasBlocks = preg_match('~<(p|br|ul|ol|h[1-6]|blockquote)[\s>/]~i', $safe) === 1;
-        $html = $content === '' ? '<p>' . htmlspecialchars($title) . '</p>'
-            : ($hasBlocks ? $safe : '<p>' . implode("</p>\n<p>", array_map('htmlspecialchars', preg_split("/\n\s*\n/", $content))) . '</p>');
-        $pdo->prepare("INSERT INTO $T (title, slug, content, post_type, status, author_id) VALUES (?, ?, ?, 'post', 'draft', ?)")->execute([$title, $slug, $html, (int)($u['id'] ?? 0)]);
-        $pid = (int)$pdo->lastInsertId();
-        if (function_exists('do_action')) do_action('save_post', $pid);
-        qp_admin_dash_json(['status' => 'success', 'id' => $pid, 'edit' => 'posts.php?post_type=post&action=edit&id=' . $pid]);
-    });
-
     // ------------------------------------------------------------ Appearance > Widgets (front-end widgets)
     $front_guard = function () {
         $req = qp_admin_dash_guard('qpw_front');

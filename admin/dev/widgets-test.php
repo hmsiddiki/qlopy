@@ -171,7 +171,7 @@ try {
     register_admin_widget('wt-cfg', ['title' => 'Configurable', 'screen' => 'dashboard', 'configurable' => true, 'fields' => [['id' => 'n', 'type' => 'number', 'min' => 1, 'max' => 9, 'default' => 4]], 'callback' => function ($s) { echo 'n=' . $s['n']; }]);
     register_admin_widget('wt-other', ['title' => 'Other screen', 'screen' => 'another', 'callback' => function () { echo 'x'; }]);
     $w = qp_admin_widgets_for('dashboard');
-    ok(isset($w['at_a_glance'], $w['site_health'], $w['activity'], $w['quick_draft'], $w['welcome']), 'the five core dashboard widgets are registered');
+    ok(isset($w['at_a_glance'], $w['site_health'], $w['activity'], $w['welcome']), 'the four core dashboard widgets are registered');
     ok(!isset($w['wt-cap']), 'a widget the user lacks the capability for is not listed');
     ok(!isset($w['wt-other']) && isset(qp_admin_widgets_for('another')['wt-other']), 'widgets belong to their own screen');
     ok(!$w['at_a_glance']['removable'] && !$w['site_health']['removable'] && $w['welcome']['removable'], 'At a glance and Site health are unremovable, Welcome is removable');
@@ -179,7 +179,7 @@ try {
     $lay = qp_admin_layout_resolve('dashboard');
     $flat = []; foreach ($lay['columns'] as $ci => $col) foreach ($col as $x) $flat[$x['id']] = $ci;
     ok($lay['source'] === 'code' && $lay['cols'] === 3 && $flat['at_a_glance'] === 0 && $flat['site_health'] === 1 && $flat['wt-boom'] === 1, 'code defaults: columns follow the declared column');
-    ok(array_search('at_a_glance', array_column($lay['columns'][0], 'id')) < array_search('quick_draft', array_column($lay['columns'][0], 'id')), 'priority high comes before core inside a column');
+    ok(array_search('at_a_glance', array_column($lay['columns'][0], 'id')) < array_search('wt-fixed', array_column($lay['columns'][0], 'id')), 'priority high comes before core inside a column');
     // filter can drop a widget
     add_filter('qp_admin_widgets', function ($ws, $screen) { if ($screen === 'dashboard' && !empty($GLOBALS['wt_drop'])) unset($ws['welcome']); return $ws; }, 10, 2);
     $GLOBALS['wt_drop'] = true; ok(!isset(qp_admin_widgets_for('dashboard')['welcome']), 'the qp_admin_widgets filter can drop a widget'); $GLOBALS['wt_drop'] = false;
@@ -247,11 +247,7 @@ try {
     ok($r['code'] === 404, 'a lazy load for a widget the user may not see is refused');
     $r = $http($ajax, ['action' => 'qpw_widget_load', '_n' => $n, 'screen' => 'dashboard', 'id' => 'activity']);
     ok(($r['json']['status'] ?? '') === 'success' && strpos($r['json']['html'] ?? '', 'Latest content') !== false, 'Recent activity loads');
-    $r = $http($ajax, ['action' => 'qpw_quick_draft', '_n' => $n, 'title' => 'Widget test draft', 'content' => "para <b>one</b>\n\npara two"]);
-    if (($r['json']['id'] ?? 0)) $draftIds[] = (int)$r['json']['id'];
-    $row = $pdo->query("SELECT status, content FROM " . table_name('posts') . " WHERE id = " . (int)($r['json']['id'] ?? 0))->fetch(PDO::FETCH_ASSOC);
-    ok(($r['json']['status'] ?? '') === 'success' && $row && $row['status'] === 'draft' && strpos($row['content'], '<b>') === false && substr_count($row['content'], '<p>') === 2, 'Quick draft creates a draft, strips tags, makes two paragraphs');
-    $r = $http($ajax, ['action' => 'qpw_widget_settings', '_n' => $n, 'screen' => 'dashboard', 'id' => 'quick_draft', 'settings' => ['x' => 1]]);
+    $r = $http($ajax, ['action' => 'qpw_widget_settings', '_n' => $n, 'screen' => 'dashboard', 'id' => 'activity', 'settings' => ['x' => 1]]);
     ok($r['code'] === 404, 'settings for a non-configurable widget are refused');
     $r = $http($ajax, ['action' => 'qpw_layout_reset', '_n' => $n, 'screen' => 'dashboard']);
     $r2 = $http('index.php?page=dashboard');

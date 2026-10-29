@@ -3640,13 +3640,52 @@ function enqueue_admin_script($handle, $src, $deps = [], $ver = '', $in_footer =
 }
 
 /**
+ * Request the rich text editor (TinyMCE + initializer) for the current admin page.
+ * Call from any code that renders a `.qpmeta-richtext` textarea; scripts print in the footer,
+ * so a call made while the body renders is still picked up. Safe to call repeatedly.
+ */
+function qp_require_editor() {
+    global $qlopy_admin_assets;
+    if (isset($qlopy_admin_assets['scripts']['editor-init'])) return;
+    $ver = defined('QLOPY_VERSION') ? QLOPY_VERSION : '1';
+    enqueue_admin_script('tinymce', 'assets/js/tinymce/tinymce.min.js', ['admin-jquery'], $ver, true);
+    enqueue_admin_script('editor-init', 'assets/js/editor-init.js', ['admin-jquery','tinymce'], $ver, true);
+}
+
+/**
+ * Version query string for an enqueued admin asset ('' for none, else '?ver=...').
+ * Controlled by the 'admin_assets_query' filter (independent of the front-end 'assets_query'):
+ * Default is 'filemtime'; a theme/plugin can change it:
+ *   'filemtime' - ?ver= is the file's modification time: cached until the file changes
+ *   true        - ?ver= is the version passed to enqueue_admin_script()/enqueue_admin_style()
+ *   false       - no query string at all (leave cache busting to the server/CDN)
+ * e.g. add_filter('admin_assets_query', '__return_false');
+ */
+function qp_admin_asset_query(array $asset) {
+    static $mode = null;
+    if ($mode === null) {
+        $mode = 'filemtime';
+        if (function_exists('apply_filters')) $mode = apply_filters('admin_assets_query', $mode);
+    }
+    if ($mode === false || $mode === 0 || $mode === '0') return '';
+    if ($mode === 'filemtime') {
+        $src = (string)($asset['src'] ?? '');
+        if ($src !== '' && !preg_match('~^([a-z][a-z0-9+.-]*:)?//|^/~i', $src)) {
+            $mt = @filemtime(__DIR__ . '/admin/' . $src);
+            if ($mt) return '?ver=' . $mt;
+        }
+    }
+    return !empty($asset['ver']) ? '?ver=' . $asset['ver'] : '';
+}
+
+/**
  * Print the HTML tags for enqueued styles in the header
  */
 function print_admin_styles() {
     global $qlopy_admin_assets;
     // Simple dependency resolution omitted for brevity (can be added later)
     foreach ($qlopy_admin_assets['styles'] as $style) {
-        $ver_suffix = $style['ver'] ? '?ver=' . $style['ver'] : '';
+        $ver_suffix = qp_admin_asset_query($style);
         echo '<link rel="stylesheet" href="' . htmlspecialchars($style['src']) . $ver_suffix . '" media="' . htmlspecialchars($style['media']) . '">' . "\n";
     }
 }
@@ -3658,7 +3697,7 @@ function print_admin_header_scripts() {
     global $qlopy_admin_assets;
     foreach ($qlopy_admin_assets['scripts'] as $script) {
         if (!$script['in_footer']) {
-            $ver_suffix = $script['ver'] ? '?ver=' . $script['ver'] : '';
+            $ver_suffix = qp_admin_asset_query($script);
             echo '<script src="' . htmlspecialchars($script['src']) . $ver_suffix . '"></script>' . "\n";
         }
     }
@@ -3672,7 +3711,7 @@ function print_admin_footer_scripts() {
     global $qlopy_admin_assets;
     foreach ($qlopy_admin_assets['scripts'] as $script) {
         if ($script['in_footer']) {
-            $ver_suffix = $script['ver'] ? '?ver=' . $script['ver'] : '';
+            $ver_suffix = qp_admin_asset_query($script);
             echo '<script src="' . htmlspecialchars($script['src']) . $ver_suffix . '"></script>' . "\n";
         }
     }

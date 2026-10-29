@@ -60,7 +60,7 @@ if (!empty($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)) {
                     </div>
                     <div class="form-row">
                         <div class="form-group col-md-6"><label>Username</label><input name="smtp_username" class="form-control"></div>
-                        <div class="form-group col-md-6"><label>Password</label><input name="smtp_password" type="password" class="form-control" autocomplete="new-password"></div>
+                        <div class="form-group col-md-6"><label>Password</label><input name="smtp_password" type="password" class="form-control" autocomplete="new-password"><small class="form-text text-muted qp-secret-hint" data-secret="smtp_password"></small></div>
                     </div>
                     <div class="form-row">
                         <div class="form-group col-md-4"><label>Auth Method</label>
@@ -75,7 +75,7 @@ if (!empty($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)) {
                     <h5>OAuth2 (Gmail/Office365)</h5>
                     <div class="form-row">
                         <div class="form-group col-md-4"><label>Client ID</label><input name="oauth_client_id" class="form-control"></div>
-                        <div class="form-group col-md-3"><label>Client Secret</label><input name="oauth_client_secret" type="password" class="form-control"></div>
+                        <div class="form-group col-md-3"><label>Client Secret</label><input name="oauth_client_secret" type="password" class="form-control" autocomplete="new-password"><small class="form-text text-muted qp-secret-hint" data-secret="oauth_client_secret"></small></div>
                         <div class="form-group col-md-3"><label>Provider</label>
                             <select name="oauth_provider" class="form-control">
                                 <option value="google">Google (Gmail)</option>
@@ -86,7 +86,7 @@ if (!empty($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)) {
                         <div class="form-group col-md-2" style="display:flex;align-items:flex-end"><button id="qp-oauth-revoke" type="button" class="btn btn-sm btn-outline-danger">Revoke</button></div>
                     </div>
                     <p class="small text-muted">Paste a Refresh Token here if you have one. OAuth flows are handled externally for now.</p>
-                    <div class="form-group"><label>Refresh Token</label><input name="oauth_refresh_token" class="form-control"></div>
+                    <div class="form-group"><label>Refresh Token</label><input name="oauth_refresh_token" class="form-control" autocomplete="off"><small class="form-text text-muted qp-secret-hint" data-secret="oauth_refresh_token"></small></div>
                     <div class="mt-2"><span id="qp-oauth-status" class="small text-muted"></span></div>
                 </div>
 
@@ -96,7 +96,7 @@ if (!empty($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)) {
                         <div class="form-group col-md-3"><label>Enable DKIM</label><select name="dkim_enabled" class="form-control"><option value="0">No</option><option value="1">Yes</option></select></div>
                         <div class="form-group col-md-9"><label>DKIM Selector</label><input name="dkim_selector" class="form-control"></div>
                     </div>
-                    <div class="form-group"><label>Private Key (PEM)</label><textarea name="dkim_private_key" class="form-control" rows="4"></textarea></div>
+                    <div class="form-group"><label>Private Key (PEM)</label><textarea name="dkim_private_key" class="form-control" rows="4"></textarea><small class="form-text text-muted qp-secret-hint" data-secret="dkim_private_key"></small></div>
                     <p class="small text-muted">If provided, messages will be DKIM-signed before sending.</p>
                     <div class="mt-2">
                         <button type="button" id="qp-dkim-record" class="btn btn-sm btn-outline-secondary">Show DKIM DNS record</button>
@@ -213,6 +213,19 @@ if (!empty($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)) {
                             try { el.value = j.settings[k]; } catch(e) {}
                         }
                     }
+                    // Secrets are never sent back: tell the admin whether one is stored, and that a blank field keeps it
+                    const set = j.secrets_set || {};
+                    document.querySelectorAll('.qp-secret-hint').forEach(function(h){
+                        const stored = !!set[h.dataset.secret];
+                        h.textContent = stored ? 'Already set. Leave blank to keep it, or type a new value to replace it.' : 'Not set.';
+                        h.classList.toggle('text-success', stored);
+                        if (stored) {
+                            const lab = document.createElement('label'); lab.className = 'ml-2 mb-0 text-danger';
+                            const cb = document.createElement('input'); cb.type = 'checkbox'; cb.name = 'clear_' + h.dataset.secret; cb.className = 'mr-1';
+                            lab.appendChild(cb); lab.appendChild(document.createTextNode('Remove stored value on save'));
+                            h.appendChild(lab);
+                        }
+                    });
                     // prefill oauth provider select
                     if (j.settings.oauth_provider) {
                         const prov = qs('select[name="oauth_provider"]'); if (prov) prov.value = j.settings.oauth_provider;
@@ -416,7 +429,7 @@ if (!empty($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)) {
                 j.logs.forEach(l=>{
                     const tr = document.createElement('tr');
                     tr.innerHTML = '<td>'+l.id+'</td><td>'+l.recipients+'</td><td>'+ (l.subject||'') +'</td><td>'+l.status+'</td><td>'+ (l.created_at_formatted || l.created_at || '') +'</td>';
-                    const dbgBtn = document.createElement('button'); dbgBtn.className='btn btn-sm btn-outline-secondary'; dbgBtn.textContent='Transcript'; dbgBtn.addEventListener('click', function(){ fetch(ajaxUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=qp_mail_get_debug&log_id='+encodeURIComponent(l.id)}).then(r=>r.json()).then(j=>{ if (j.status==='success') { const w = window.open('about:blank','_blank'); w.document.write('<pre>'+ (j.transcript ? j.transcript.replace(/</g,'&lt;') : 'No transcript') +'</pre>'); } else alert('No transcript'); }); });
+                    const dbgBtn = document.createElement('button'); dbgBtn.className='btn btn-sm btn-outline-secondary'; dbgBtn.textContent='Transcript'; dbgBtn.addEventListener('click', function(){ fetch(ajaxUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=qp_mail_get_debug&log_id='+encodeURIComponent(l.id)}).then(r=>r.json()).then(j=>{ if (j.status==='success') { const w = window.open('about:blank','_blank'); w.document.write('<pre>'+ (j.transcript ? j.transcript.replace(/</g,'&lt;') : 'No transcript was recorded for this mail (mails sent before transcripts were enabled have none).') +'</pre>'); } else alert('No transcript'); }); });
                     const td = document.createElement('td'); td.appendChild(dbgBtn); tr.appendChild(td);
                     tb.appendChild(tr);
                 }); table.appendChild(tb); container.appendChild(table);

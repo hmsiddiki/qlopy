@@ -161,21 +161,6 @@
         body.innerHTML = '<div class="qpw-lazy text-muted small" data-lazy="1">Loading…</div>';
         loadBody(box);
       });
-    } else if (form.classList.contains('qpw-quick-draft')) {
-      e.preventDefault();
-      var out = form.querySelector('.qpw-qd-msg');
-      out.textContent = 'Saving…';
-      if (window.tinymce) tinymce.triggerSave();
-      post('qpw_quick_draft', { title: form.title.value, content: form.qd_content.value }).then(function (r) {
-        if (r.status === 'success') {
-          form.reset();
-          try { var ed = window.tinymce && tinymce.get(form.qd_content.id); if (ed) ed.setContent(''); } catch (x) { /* ignore */ }
-          out.textContent = '';
-          var a = document.createElement('a');
-          a.href = r.edit; a.textContent = 'Draft saved. Edit it';
-          out.appendChild(a);
-        } else out.textContent = r.message || 'Could not save.';
-      }).catch(function () { out.textContent = 'Could not reach the server.'; });
     }
   });
 

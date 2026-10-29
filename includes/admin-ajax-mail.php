@@ -5,6 +5,9 @@ if (!defined('QLOPY_INIT')) { http_response_code(403); exit; }
 
 if (!function_exists('add_admin_action')) return; // ensure admin hooks are available
 
+// Settings keys holding encrypted credentials: never sent to the browser, kept when the form leaves them blank.
+const QP_MAIL_SECRET_KEYS = ['smtp_password', 'oauth_client_secret', 'oauth_refresh_token', 'dkim_private_key'];
+
 // helper to validate nonce (action 'qp_mail_settings') if available
 function _qp_mail_verify_admin_nonce() {
     // Accept either the modern `_qp_nonce` or legacy `admin_nonce` field.
@@ -34,7 +37,11 @@ function _qp_mail_verify_admin_nonce() {
 
 add_admin_action('iitcm_admin_ajax_qp_mail_get_settings', function($req){
     $s = function_exists('qp_mail_get_settings') ? qp_mail_get_settings() : [];
-    echo json_encode(['status'=>'success','settings'=>$s]);
+    // Secrets never go back to the browser (not even encrypted); the form only learns whether one is stored.
+    $set = [];
+    foreach (QP_MAIL_SECRET_KEYS as $k) { $set[$k] = !empty($s[$k]); unset($s[$k]); }
+    unset($s['oauth_access_token']);
+    echo json_encode(['status'=>'success','settings'=>$s,'secrets_set'=>$set]);
     exit;
 }, 10, 1);
 
@@ -87,6 +94,14 @@ add_admin_action('iitcm_admin_ajax_qp_mail_save_settings', function($req){
             $incoming['dkim_private_key'] = qp_mail_encrypt($incoming['dkim_private_key']);
         } else { unset($incoming['dkim_private_key']); }
     }
+    // qp_mail_update_settings() replaces the whole array, so a blank secret field must carry the stored value over.
+    // Also keep the cached OAuth access token, which the form never sends.
+    $existing = function_exists('qp_mail_get_settings') ? qp_mail_get_settings() : [];
+    foreach (array_merge(QP_MAIL_SECRET_KEYS, ['oauth_access_token', 'oauth_access_token_expiry']) as $k) {
+        if (!isset($incoming[$k]) && isset($existing[$k]) && empty($incoming['clear_' . $k])) $incoming[$k] = $existing[$k];
+    }
+    // "Remove stored value" checkbox: the secret is dropped (no new value typed), and the flag itself is not stored.
+    foreach (QP_MAIL_SECRET_KEYS as $k) unset($incoming['clear_' . $k]);
     $ok = function_exists('qp_mail_update_settings') ? qp_mail_update_settings($incoming) : false;
     echo json_encode(['status' => $ok ? 'success' : 'error']); exit;
 }, 10, 1);

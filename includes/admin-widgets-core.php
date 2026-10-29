@@ -60,16 +60,6 @@ register_admin_widget('activity', [
     },
 ]);
 
-register_admin_widget('quick_draft', [
-    'title' => 'Quick draft', 'column' => 1, 'priority' => 'core', 'order' => 5, 'capability' => 'manage_posts',
-    'callback' => function (array $s) {
-        echo '<form class="qpw-quick-draft" autocomplete="off">';
-        echo '<div class="form-group"><label for="qpw-qd-title" class="small mb-1">Title</label><input type="text" class="form-control form-control-sm" id="qpw-qd-title" name="title" maxlength="200"></div>';
-        echo '<div class="form-group"><label for="qpw-qd-content" class="small mb-1">What is on your mind?</label><textarea class="form-control form-control-sm qpmeta-richtext" id="qpw-qd-content" name="qd_content" rows="6"></textarea></div>';
-        echo '<button type="submit" class="btn btn-sm btn-primary">Save draft</button> <span class="small qpw-qd-msg" role="status" aria-live="polite"></span></form>';
-    },
-]);
-
 register_admin_widget('site_health', [
     'title' => 'Site health', 'column' => 2, 'priority' => 'high', 'order' => 1, 'removable' => false, 'lazy' => true, 'cache' => 60,
     'callback' => function (array $s) {
@@ -118,7 +108,7 @@ register_admin_widget('welcome', [
     'title' => 'Welcome', 'display' => 'banner', 'span' => 'full', 'priority' => 'high', 'order' => 0,
     'callback' => function (array $s) {
         $site = function_exists('get_option_meta') ? (get_option_meta('site_name') ?: 'your site') : 'your site';
-        echo '<div class="qpw-welcome"><div class="qpw-welcome-lead"><p class="qpw-kicker">Getting started</p><h2>Make ' . qp_dash_h($site) . ' yours</h2><p>Three quick steps, then this panel is out of your way. Dismiss it any time; Screen options brings it back.</p></div>';
+        echo '<div class="qpw-welcome"><div class="qpw-welcome-lead"><p class="qpw-kicker">Getting started</p><h2>Welcome to ' . qp_dash_h($site) . ' <small class="qpw-powered">powered by Qlopy' . (defined('QLOPY_VERSION') ? ' <span class="qpw-ver">v' . qp_dash_h(QLOPY_VERSION) . '</span>' : '') . '</small></h2><p>Three quick steps, then this panel is out of your way. Dismiss it any time; Screen options brings it back.</p></div>';
         echo '<ol class="qpw-steps"><li><a href="posts.php?post_type=post"><b>1</b><span>Write your first post</span></a></li><li><a href="menus.php"><b>2</b><span>Build your menu</span></a></li><li><a href="widgets.php"><b>3</b><span>Fill your sidebars</span></a></li></ol></div>';
     },
 ]);

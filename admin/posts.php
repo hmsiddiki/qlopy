@@ -747,6 +747,7 @@ if (empty($action)) {
           <?php endif; ?>
 
           <?php if ($supports_has('editor')): ?>
+          <?php if (function_exists('qp_require_editor')) qp_require_editor(); ?>
           <div class="form-group">
             <label>Content</label>
             <textarea name="content" class="form-control" rows="12" <?= $action === 'add' ? 'required' : '' ?>><?= htmlspecialchars($post_data['content'] ?? '') ?></textarea>

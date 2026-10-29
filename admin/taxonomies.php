@@ -113,6 +113,7 @@ require_once __DIR__ . '/inc/header.php';
                         <input type="text" id="slug" name="slug" class="form-control" value="<?= htmlspecialchars($edit_term['slug'] ?? '') ?>" />
                     </div>
 
+                    <?php if (function_exists('qp_require_editor')) qp_require_editor(); ?>
                     <div class="form-group">
                         <label for="description">Description</label>
                         <textarea id="description" name="description" class="form-control qpmeta-richtext" rows="10"><?= htmlspecialchars($edit_term_description) ?></textarea>

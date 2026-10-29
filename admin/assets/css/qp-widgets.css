@@ -64,6 +64,8 @@
 .qpw-welcome::after { content: ""; position: absolute; inset: 0; pointer-events: none; background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 28px 28px; -webkit-mask-image: linear-gradient(90deg, transparent, #000 70%); mask-image: linear-gradient(90deg, transparent, #000 70%); }
 .qpw-welcome > * { position: relative; z-index: 1; }
 .qpw-welcome h2 { font-size: 1.55rem; font-weight: 650; margin: 0 0 8px; color: #fff; letter-spacing: -.01em; }
+.qpw-welcome h2 .qpw-powered { display: block; margin-top: 4px; font-size: .72rem; font-weight: 400; letter-spacing: .04em; color: #7fd1c4; }
+.qpw-welcome h2 .qpw-powered .qpw-ver { margin-left: 4px; font-size: .62rem; letter-spacing: .02em; color: #b9cdd2; opacity: .8; }
 .qpw-welcome p { margin: 0; color: #b9cdd2; line-height: 1.55; }
 .qpw-welcome .qpw-kicker { text-transform: uppercase; letter-spacing: .16em; font-size: .68rem; color: #7fd1c4; margin-bottom: 8px; }
 .qpw-welcome .qpw-kicker::before { content: ""; display: inline-block; width: 18px; height: 1px; background: #7fd1c4; margin-right: 8px; vertical-align: middle; }

@@ -222,8 +222,10 @@ function qp_mail($to, $subject, $message, $headers = [], $attachments = []) {
     // We'll include a lightweight PHPMailer usage if library present
     // prepare a headers string for the mail() fallback and a map for PHPMailer
     $headers_string = null;
+    $debugLines = [];
     try {
         $mail = qp_mail_prepare_phpmailer($settings);
+        qp_mail_capture_debug($mail, $debugLines);
 
         // Normalize headers into lines and map (accept string, numeric array of header lines, or associative array)
         $header_lines = [];
@@ -310,8 +312,6 @@ function qp_mail($to, $subject, $message, $headers = [], $attachments = []) {
         $mail->Subject = $subject;
         $mail->Body = $message;
         if (!empty($attachments) && is_array($attachments)) foreach ($attachments as $a) if (is_string($a) && file_exists($a)) $mail->addAttachment($a);
-        $debugLines = [];
-        $mail->Debugoutput = function($str, $level) use (&$debugLines) { $debugLines[] = trim($str); };
         $sent = $mail->send();
         qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>$settings['transport'] ?? 'mail','status'=>$sent ? 'sent' : 'failed','error' => $sent ? '' : $mail->ErrorInfo,'meta'=>['debug'=>implode("\n", $debugLines)]]);
         return (bool)$sent;
@@ -323,7 +323,7 @@ function qp_mail($to, $subject, $message, $headers = [], $attachments = []) {
         } else {
             $ok = @mail($to_str, $subject, $message);
         }
-        qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>'mail','status'=>$ok ? 'sent' : 'failed','error'=>$ok? '': $e->getMessage()]);
+        qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>'mail','status'=>$ok ? 'sent' : 'failed','error'=>$ok? '': $e->getMessage(),'meta'=>['debug'=>implode("\n", $debugLines)]]);
         return (bool)$ok;
     }
 }
@@ -358,6 +358,25 @@ function qp_mail_get_logs(int $limit = 200) {
     }
     $logs = function_exists('get_option_meta') ? @get_option_meta('qp_mail_logs') : @get_option('qp_mail_logs', []);
     return is_array($logs) ? array_slice(array_reverse($logs),0,$limit) : [];
+}
+
+// Record the SMTP conversation into $lines (shown by the Transcript button in the mail log). PHPMailer prints nothing
+// unless SMTPDebug is on. Credentials sent during AUTH are masked so a transcript is safe to look at and keep.
+function qp_mail_capture_debug($mail, array &$lines): void {
+    $mail->SMTPDebug = 2; // client and server lines
+    $inAuth = false;
+    $mail->Debugoutput = function ($str, $level) use (&$lines, &$inAuth) {
+        $line = trim((string)$str);
+        if ($line === '') return;
+        if (preg_match('/CLIENT -> SERVER: AUTH\b/i', $line)) {
+            $inAuth = true;
+            $line = preg_replace('/(AUTH\s+(?:PLAIN|XOAUTH2|LOGIN))\s+\S+/i', '$1 ********', $line);
+        } elseif ($inAuth && preg_match('/^CLIENT -> SERVER: \S+$/', $line)) {
+            $line = 'CLIENT -> SERVER: ********';
+        }
+        if ($inAuth && preg_match('/SERVER -> CLIENT: (?:235|[45]\d\d)\b/', $line)) $inAuth = false; // 334 prompts keep it open
+        $lines[] = $line;
+    };
 }
 
 // Prepare and return a configured PHPMailer instance based on settings.
@@ -692,14 +711,14 @@ function qp_mail_send_payload(array $payload): bool {
     $headers = $payload['headers'] ?? [];
     $attachments = $payload['attachments'] ?? [];
 
+    $debugLines = [];
     try {
         $mail = qp_mail_prepare_phpmailer($settings, $transport);
+        qp_mail_capture_debug($mail, $debugLines);
         if (is_array($to)) foreach ($to as $r) $mail->addAddress($r); else $mail->addAddress($to);
         $mail->Subject = $subject;
         $mail->Body = $message;
         if (!empty($attachments) && is_array($attachments)) foreach ($attachments as $a) if (is_string($a) && file_exists($a)) $mail->addAttachment($a);
-        $debugLines = [];
-        $mail->Debugoutput = function($str, $level) use (&$debugLines) { $debugLines[] = trim($str); };
         $sent = $mail->send();
         qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>$transport,'status'=>$sent ? 'sent' : 'failed','error' => $sent ? '' : $mail->ErrorInfo,'meta'=>['debug'=>implode("\n", $debugLines)]]);
         return (bool)$sent;
@@ -719,10 +738,10 @@ function qp_mail_send_payload(array $payload): bool {
         }
         try {
             $ok = @mail(is_array($to) ? implode(',', $to) : $to, $subject, $message);
-            qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>'mail','status'=>$ok ? 'sent' : 'failed','error'=>$ok? '': $e->getMessage()]);
+            qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>'mail','status'=>$ok ? 'sent' : 'failed','error'=>$ok? '': $e->getMessage(),'meta'=>['debug'=>implode("\n", $debugLines)]]);
             return (bool)$ok;
         } catch (Throwable $_e) {
-            qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>'mail','status'=>'failed','error'=>$_e->getMessage()]);
+            qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>'mail','status'=>'failed','error'=>$_e->getMessage(),'meta'=>['debug'=>implode("\n", $debugLines)]]);
             return false;
         }
     }
