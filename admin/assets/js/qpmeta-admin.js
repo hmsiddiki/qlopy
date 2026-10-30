@@ -394,16 +394,22 @@
             }
         });
 
-        // Update a single item's title from its first text-like field
+        // Update a single item's title from its first field: its text, or for a select the name of the chosen option (a category, a product ...).
         function updateItemTitle($it, idx) {
             var title = (idx+1) + '. ';
-            var $preview = $it.find('input[type=text].qpmeta-preview, input[type=text], textarea').first();
-            if ($preview && $preview.length) {
-                var val = $preview.val() || $preview.attr('placeholder') || '';
-                if (val && String(val).trim() !== '') title += String(val).trim(); else title += (idx+1);
-            } else {
-                title += (idx+1);
+            var $preview = $it.find('input[type=text].qpmeta-preview, input[type=text], textarea, select').first();
+            var val = '';
+            if ($preview.length) {
+                if ($preview.is('select')) {
+                    var opt = $preview.find('option:selected');
+                    if ($preview.val() && opt.length) val = opt.text().replace(/^[\s\u2014\u2013-]+/, '');
+                } else {
+                    val = $preview.val() || $preview.attr('placeholder') || '';
+                }
             }
+            val = String(val).replace(/\s+/g, ' ').trim();
+            if (val.length > 80) val = val.slice(0, 77) + '\u2026';
+            title += val !== '' ? val : (idx+1);
             $it.find('.qpmeta-panel-title').first().text(title);
         }
 
@@ -436,7 +442,7 @@
         }
 
         // Live update header text only when preview input changes (don't collapse)
-        $(document).on('input change', '.qpmeta-repeat-group input[type=text], .qpmeta-repeat-group textarea', function(){
+        $(document).on('input change', '.qpmeta-repeat-group input[type=text], .qpmeta-repeat-group textarea, .qpmeta-repeat-group select', function(){
             var $it = $(this).closest('.qpmeta-repeat-item');
             var $group = $(this).closest('.qpmeta-repeat-group');
             var idx = $group.find('> .qpmeta-repeat-item').index($it);

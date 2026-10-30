@@ -246,19 +246,7 @@ require_once __DIR__ . '/inc/header.php';
                     </tbody>
                 </table>
                                 <?php if (!empty($total_pages) && $total_pages > 1): ?>
-                                    <nav aria-label="Terms pagination" class="mt-2">
-                                        <ul class="pagination">
-                                            <?php
-                                                $qs = $_GET;
-                                                for ($p = 1; $p <= $total_pages; $p++):
-                                                    $qs['paged'] = $p;
-                                                    $qs['per_page'] = $per_page;
-                                                    $url = '?taxonomy=' . urlencode($taxonomy) . '&' . http_build_query($qs);
-                                            ?>
-                                            <li class="page-item <?= $p === $paged ? 'active' : '' ?>"><a class="page-link" href="<?= htmlspecialchars($url) ?>"><?= $p ?></a></li>
-                                            <?php endfor; ?>
-                                        </ul>
-                                    </nav>
+                                    <?php require_once __DIR__ . '/inc/pagination.php'; qp_admin_pagination((int) $paged, (int) $total_pages, function ($p) use ($per_page, $taxonomy) { $qs = $_GET; $qs['paged'] = $p; $qs['per_page'] = $per_page; return '?taxonomy=' . urlencode((string) ($taxonomy ?? '')) . '&' . http_build_query($qs); }, 'Terms pagination'); ?>
                                 <?php endif; ?>
 
                                 <div><button type="submit" class="btn btn-primary">Save Order</button></div>

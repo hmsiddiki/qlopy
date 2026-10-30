@@ -227,16 +227,21 @@ function qpmeta_render_metaboxes($object_type, $object_id = null, $option_prefix
                     // Repeatable group logic
                     $groups_data = [];
                     if ($object_id !== null && !empty($group_fields)) {
-                        $first_field_id = $group_fields[0]['id'] ?? '';
-                        if ($first_field_id) {
+                        // One row per saved value of the field that has the most (not just the first field): a field added to a group later has no
+                        // saved values yet, and the rows the other fields already hold must still show.
+                        $row_count = 0;
+                        foreach ($group_fields as $group_field) {
+                            $group_field_id = $group_field['id'] ?? '';
+                            if (!$group_field_id) continue;
                             $storage_id = ($object_type === 'option' && !empty($mb['option_prefix']))
-                                ? $mb['option_prefix'] . '_' . $first_field_id
-                                : $first_field_id;
-                            $first_values = qpmeta_get_object_meta($object_type, $object_id, $storage_id);
-                            if (is_array($first_values)) {
-                                $groups_data = array_values($first_values);
+                                ? $mb['option_prefix'] . '_' . $group_field_id
+                                : $group_field_id;
+                            $field_values = qpmeta_get_object_meta($object_type, $object_id, $storage_id);
+                            if (is_array($field_values)) {
+                                $row_count = max($row_count, count($field_values));
                             }
                         }
+                        $groups_data = $row_count > 0 ? range(0, $row_count - 1) : [];   // each field picks its own value by this index below
                     }
                     if (empty($groups_data)) $groups_data = [];
 

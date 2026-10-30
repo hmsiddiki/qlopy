@@ -459,19 +459,7 @@ require_once __DIR__ . '/inc/header.php';
 </table>
 
 <?php if (!empty($total_pages) && $total_pages > 1): ?>
-    <nav aria-label="Users pagination" class="mt-2">
-        <ul class="pagination">
-            <?php
-                $qs = $_GET;
-                for ($p = 1; $p <= $total_pages; $p++):
-                    $qs['paged'] = $p;
-                    $qs['per_page'] = $per_page;
-                    $url = 'users.php?' . http_build_query($qs);
-            ?>
-            <li class="page-item <?= $p === $paged ? 'active' : '' ?>"><a class="page-link" href="<?= htmlspecialchars($url) ?>"><?= $p ?></a></li>
-            <?php endfor; ?>
-        </ul>
-    </nav>
+    <?php require_once __DIR__ . '/inc/pagination.php'; qp_admin_pagination((int) $paged, (int) $total_pages, function ($p) use ($per_page) { $qs = $_GET; $qs['paged'] = $p; $qs['per_page'] = $per_page; return 'users.php?' . http_build_query($qs); }, 'Users pagination'); ?>
 <?php endif; ?>
                 </div>  
 <?php require_once __DIR__ . '/inc/footer.php'; ?>

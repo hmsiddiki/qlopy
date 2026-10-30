@@ -419,18 +419,101 @@ if (!empty($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)) {
             }
         }).catch(console.error);} 
 
-        function loadLogs(){ fetch(ajaxUrl, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: 'action=qp_mail_get_logs' }).then(r=>r.json()).then(j=>{
+        // "View email": the mail as it was sent. HTML mails open in a locked iframe (no scripts); "Text (converted)" is the same mail with the tags
+        // turned into plain text (there is no separate text part to show: the mail log keeps one body per mail). A mail sent as plain text shows as text only.
+        function mailHtmlToText(html){
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            doc.querySelectorAll('script,style,head,title,noscript,template').forEach(n=>n.remove());
+            const BLOCK = /^(P|DIV|TR|TABLE|UL|OL|H[1-6]|BLOCKQUOTE|SECTION|ARTICLE|HEADER|FOOTER|PRE|DL)$/;
+            const out = [];
+            (function walk(n){
+                if (n.nodeType === 3) { out.push(n.nodeValue.replace(/\s+/g, ' ')); return; }
+                if (n.nodeType !== 1) return;
+                const t = n.tagName;
+                if (t === 'BR') { out.push('\n'); return; }
+                if (t === 'HR') { out.push('\n----------\n'); return; }
+                if (t === 'IMG') { const alt = (n.getAttribute('alt') || '').trim(); if (alt) out.push('[' + alt + ']'); return; }
+                if (t === 'LI') out.push('\n- ');
+                const block = BLOCK.test(t);
+                if (block) out.push('\n');
+                Array.prototype.forEach.call(n.childNodes, walk);
+                if ((t === 'TD' || t === 'TH') && n.nextElementSibling) out.push('  |  ');
+                if (t === 'A') { const href = n.getAttribute('href') || '', txt = n.textContent.trim(); if (/^https?:/i.test(href) && href !== txt) out.push(' (' + href + ')'); }
+                if (block) out.push('\n');
+            })(doc.body || doc);
+            return out.join('').replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{3,}/g, '  ').trim();
+        }
+        function showMailPreview(l, only){
+            const asTranscript = only === 'transcript';   // the Transcript button: the SMTP conversation in its own pop-up (View email shows the mail only)
+            let to = l.recipients; try { const p = JSON.parse(l.recipients); to = Array.isArray(p) ? p.join(', ') : (typeof p === 'object' && p ? Object.keys(p).join(', ') : String(p)); } catch(e) {}
+            const body = String(l.body || '');
+            let ctype = ''; try { const h = JSON.parse(l.headers || '[]'); ctype = JSON.stringify(h).toLowerCase(); } catch(e) {}
+            const looksHtml = /<\s*(html|body|table|div|p|br|a|span|h[1-6]|ul|ol|img)\b/i.test(body);
+            const isPlain = ctype.indexOf('text/plain') !== -1 || !looksHtml;
+            const el = (tag, css, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text != null) e.textContent = text; return e; };
+            const overlay = el('div', 'position:fixed;inset:0;z-index:20000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:20px');
+            const card = el('div', 'background:#fff;border-radius:8px;width:min(860px,100%);max-height:94vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,.35)');
+            const head = el('div', 'padding:14px 18px;border-bottom:1px solid #dee2e6;display:flex;gap:12px;align-items:flex-start');
+            const info = el('div', 'flex:1;min-width:0');
+            info.appendChild(el('div', 'font-weight:600;font-size:16px;word-break:break-word', l.subject || '(no subject)'));
+            info.appendChild(el('div', 'font-size:13px;color:#666;margin-top:3px;word-break:break-word', 'To: ' + to + '  ·  ' + (l.status || '') + '  ·  ' + (l.created_at_formatted || l.created_at || '')));
+            if (l.error) info.appendChild(el('div', 'font-size:13px;color:#b02a37;margin-top:3px;word-break:break-word', 'Error: ' + l.error));
+            const close = el('button', 'border:0;background:none;font-size:26px;line-height:1;cursor:pointer;color:#666', '×'); close.type = 'button'; close.setAttribute('aria-label', 'Close');
+            head.appendChild(info);
+            // The views: HTML, Text (converted) - both only when the mail has a body - and the SMTP Transcript (loaded when first opened).
+            const tabs = {};
+            const grp = el('div', 'display:flex;gap:6px;flex:none;flex-wrap:wrap;justify-content:flex-end');
+            const addTab = (key, label) => { const b = el('button', '', label); b.type = 'button'; b.className = 'btn btn-sm btn-outline-secondary'; tabs[key] = b; grp.appendChild(b); };
+            if (!asTranscript && body !== '') { if (!isPlain) addTab('html', 'HTML'); addTab('text', isPlain ? 'Text' : 'Text (converted)'); }
+            head.appendChild(grp);
+            head.appendChild(close);
+            const pane = el('div', 'padding:0;overflow:auto;flex:1;min-height:200px');
+            const note = el('div', 'padding:8px 18px;font-size:12px;color:#777;border-top:1px solid #eee', isPlain ? 'Sent as plain text.' : 'The converted text is made from the HTML here; the mail itself had no separate text part.');
+            const iframe = el('iframe', 'width:100%;height:62vh;border:0;display:block;background:#fff');
+            iframe.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox'); iframe.setAttribute('referrerpolicy', 'no-referrer');
+            const pre = el('pre', 'margin:0;padding:16px 18px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.5;font-family:ui-monospace,Consolas,monospace;max-height:62vh;overflow:auto');
+            const NOTES = { html: 'The mail as it was sent. Scripts do not run here.', text: isPlain ? 'Sent as plain text.' : 'The converted text is made from the HTML here; the mail itself had no separate text part.', transcript: 'The SMTP conversation recorded when this mail was sent (passwords are masked).' };
+            let transcriptText = null;
+            const mark = (key) => { Object.keys(tabs).forEach(k => { tabs[k].className = 'btn btn-sm ' + (k === key ? 'btn-primary' : 'btn-outline-secondary'); }); note.textContent = NOTES[key]; };
+            const showHtml = () => { mark('html'); pane.textContent = ''; iframe.srcdoc = '<base target="_blank">' + body; pane.appendChild(iframe); };
+            const showText = () => { mark('text'); pane.textContent = ''; pre.textContent = isPlain ? body : mailHtmlToText(body); pane.appendChild(pre); };
+            const showTranscript = () => {
+                mark('transcript'); pane.textContent = '';
+                const paint = (t) => { pane.textContent = ''; pre.textContent = t; pane.appendChild(pre); };
+                if (transcriptText !== null) { paint(transcriptText); return; }
+                paint('Loading…');
+                fetch(ajaxUrl, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'action=qp_mail_get_debug&log_id=' + encodeURIComponent(l.id) })
+                    .then(r => r.json()).then(j => {
+                        transcriptText = (j.status === 'success' && j.transcript) ? j.transcript : 'No transcript was recorded for this mail (mails sent before transcripts were enabled have none).';
+                        if (note.textContent === NOTES.transcript) paint(transcriptText);
+                    }).catch(() => { transcriptText = null; paint('The transcript could not be loaded.'); });
+            };
+            if (tabs.html) tabs.html.addEventListener('click', showHtml);
+            if (tabs.text) tabs.text.addEventListener('click', showText);
+            const done = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+            const onKey = (e) => { if (e.key === 'Escape') done(); };
+            close.addEventListener('click', done);
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) done(); });
+            document.addEventListener('keydown', onKey);
+            card.appendChild(head); card.appendChild(pane); card.appendChild(note); overlay.appendChild(card); document.body.appendChild(overlay);
+            if (asTranscript) { showTranscript(); return; }
+            if (body === '') { pane.appendChild(el('div', 'padding:24px 18px;color:#777', 'No body was recorded for this mail.')); note.textContent = ''; return; }
+            if (isPlain) showText(); else showHtml();
+        }
+
+        function loadLogs(){ fetch(ajaxUrl,{ method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: 'action=qp_mail_get_logs' }).then(r=>r.json()).then(j=>{
             if (j.status==='success') {
                 const container = qs('#qp-mail-logs-list'); container.innerHTML = '';
                 if (!j.logs || j.logs.length===0) { container.innerHTML = '<div class="alert alert-info">No logs</div>'; return; }
                 const table = document.createElement('table'); table.className='table table-sm table-striped';
-                table.innerHTML = '<thead><tr><th>ID</th><th>Recipients</th><th>Subject</th><th>Status</th><th>When</th><th>Debug</th></tr></thead>';
+                table.innerHTML = '<thead><tr><th>ID</th><th>Recipients</th><th>Subject</th><th>Status</th><th>When</th><th>Actions</th></tr></thead>';
                 const tb = document.createElement('tbody');
                 j.logs.forEach(l=>{
                     const tr = document.createElement('tr');
                     tr.innerHTML = '<td>'+l.id+'</td><td>'+l.recipients+'</td><td>'+ (l.subject||'') +'</td><td>'+l.status+'</td><td>'+ (l.created_at_formatted || l.created_at || '') +'</td>';
-                    const dbgBtn = document.createElement('button'); dbgBtn.className='btn btn-sm btn-outline-secondary'; dbgBtn.textContent='Transcript'; dbgBtn.addEventListener('click', function(){ fetch(ajaxUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=qp_mail_get_debug&log_id='+encodeURIComponent(l.id)}).then(r=>r.json()).then(j=>{ if (j.status==='success') { const w = window.open('about:blank','_blank'); w.document.write('<pre>'+ (j.transcript ? j.transcript.replace(/</g,'&lt;') : 'No transcript was recorded for this mail (mails sent before transcripts were enabled have none).') +'</pre>'); } else alert('No transcript'); }); });
-                    const td = document.createElement('td'); td.appendChild(dbgBtn); tr.appendChild(td);
+                    const dbgBtn = document.createElement('button'); dbgBtn.className='btn btn-sm btn-outline-secondary'; dbgBtn.textContent='Transcript'; dbgBtn.addEventListener('click', function(){ showMailPreview(l, 'transcript'); });
+                    const viewBtn = document.createElement('button'); viewBtn.className='btn btn-sm btn-outline-primary mr-1'; viewBtn.textContent='View email'; viewBtn.addEventListener('click', function(){ showMailPreview(l); });
+                    const td = document.createElement('td'); td.appendChild(viewBtn); td.appendChild(dbgBtn); tr.appendChild(td);
                     tb.appendChild(tr);
                 }); table.appendChild(tb); container.appendChild(table);
             }
