@@ -239,6 +239,10 @@ if ($action === 'qpmeta_tag_get') {
 
 $args = [$_REQUEST];
 
+// A handler that throws is skipped and logged (C10); answer a JSON 500 rather than an empty reply.
+$qp_faults_before = function_exists('qp_hook_error_count') ? qp_hook_error_count() : 0;
+if (function_exists('qp_ajax_report_hook_failure')) register_shutdown_function('qp_ajax_report_hook_failure', $qp_faults_before);
+
 // First try to dispatch the hook, if no handlers return 404 error
 if (!do_admin_action($hook_name, ...$args)) {
     // Fallback: if no admin-specific handler, try global AJAX actions

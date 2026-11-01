@@ -39,6 +39,16 @@ if (!empty($active_plugins)) {
     $active_plugins = $normalized;
 }
 
+// Resume a paused plugin / clear recorded plugin problems (C10)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'qp_clear_faults') {
+    if (function_exists('qp_admin_verify_nonce') && qp_admin_verify_nonce($_POST['_qp_nonce'] ?? '', 'qp_clear_faults') && function_exists('qp_plugin_faults_clear')) {
+        qp_plugin_faults_clear(is_string($_POST['fault_plugin'] ?? null) ? $_POST['fault_plugin'] : '');
+        header('Location: plugins.php');
+        exit;
+    }
+    $error_message = 'Invalid request. Please try again.';
+}
+
 // Handle activate/deactivate requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['plugin']) && isset($_POST['action'])) {
     $plugin = $_POST['plugin'];
@@ -79,18 +89,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['plugin']) && isset($_
                 $error_message = 'Cannot activate "' . htmlspecialchars($plugin) . '" — missing required plugin(s): ' . htmlspecialchars(implode(', ', $missing));
                 // Do not activate; show message on the same page.
             } else {
-                // Safe to activate
-                $active_plugins[$plugin] = true;
-                $stmt_upd = $pdo->prepare("INSERT INTO " . table_name('site_options') . " (option_name, option_value) VALUES ('active_plugins', ?) ON DUPLICATE KEY UPDATE option_value=VALUES(option_value)");
-                $stmt_upd->execute([json_encode($active_plugins)]);
+                // Load it first: a plugin that throws while loading is not activated, and the reason is shown (C10).
+                $load_error = null;
                 if (is_file($plugin_file)) {
-                    include_once $plugin_file;
+                    $qp_hooks_before = qp_hooks_snapshot((string)$plugin);
+                    try { include_once $plugin_file; } catch (Throwable $qp_e) { $load_error = $qp_e; qp_plugin_load_failed($plugin, $qp_e, $qp_hooks_before); } finally { qp_hooks_log_stop(); }
                 }
-                if (function_exists('do_plugin_activation')) {
-                    do_plugin_activation($plugin);
+                if ($load_error !== null) {
+                    $error_message = 'Cannot activate "' . $plugin . '": it failed while loading (' . get_class($load_error) . ': ' . $load_error->getMessage() . ' in ' . qp_fault_short_path($load_error->getFile()) . ':' . (int)$load_error->getLine() . ').';
+                } else {
+                    $active_plugins[$plugin] = true;
+                    $stmt_upd = $pdo->prepare("INSERT INTO " . table_name('site_options') . " (option_name, option_value) VALUES ('active_plugins', ?) ON DUPLICATE KEY UPDATE option_value=VALUES(option_value)");
+                    $stmt_upd->execute([json_encode($active_plugins)]);
+                    if (function_exists('do_plugin_activation')) {
+                        do_plugin_activation($plugin);
+                    }
+                    header('Location: plugins.php');
+                    exit;
                 }
-                header('Location: plugins.php');
-                exit;
             }
         } elseif ($action === 'deactivate') {
             // Remove the plugin being deactivated
@@ -182,6 +198,29 @@ if (empty($error_message) && function_exists('qp_get_admin_notice')) {
 if (!empty($error_message)) {
     echo '<div style="margin:8px 0;padding:10px;border-left:4px solid #d63638;background:#fff6f6;color:#900;">' . htmlspecialchars($error_message) . '</div>';
 }
+
+// Problems recorded by the fault isolation (C10): a hook that threw, a plugin that failed to load, a fatal error.
+$qp_faults = function_exists('qp_plugin_faults') ? qp_plugin_faults() : [];
+if ($qp_faults) {
+    echo '<div style="margin:8px 0 16px;padding:10px 12px;border-left:4px solid #dba617;background:#fffbea;">';
+    echo '<strong>Plugin problems</strong> <span style="color:#666;font-size:13px;">The site kept running: each failing part was skipped and logged.</span>';
+    echo '<table style="width:100%;margin-top:8px;font-size:13px;border-collapse:collapse;">';
+    echo '<tr style="text-align:left;"><th>Plugin</th><th>Where</th><th>Error</th><th>Times</th><th>Last</th><th></th></tr>';
+    foreach ($qp_faults as $qp_fault) {
+        $qp_slug = (string)($qp_fault['plugin'] ?? '');
+        echo '<tr style="border-top:1px solid #eee;vertical-align:top;">';
+        echo '<td><strong>' . htmlspecialchars($qp_slug) . '</strong>' . (!empty($qp_fault['fatal']) ? '<br><span style="color:#d63638;">Paused in the admin after a fatal error</span>' : '') . '</td>';
+        echo '<td>' . htmlspecialchars((string)$qp_fault['where']) . ($qp_fault['callback'] !== '' ? '<br><code>' . htmlspecialchars((string)$qp_fault['callback']) . '</code>' : '') . '</td>';
+        echo '<td style="word-break:break-word;">' . htmlspecialchars((string)$qp_fault['message']) . '</td>';
+        echo '<td>' . (int)$qp_fault['count'] . (!empty($qp_fault['fatal']) ? '' : '<span style="color:#888;" title="Counted at most once every 10 minutes">*</span>') . '</td>';
+        echo '<td>' . htmlspecialchars(gmdate('Y-m-d H:i', (int)$qp_fault['last'])) . ' UTC</td>';
+        echo '<td><form method="post" style="margin:0;"><input type="hidden" name="action" value="qp_clear_faults"><input type="hidden" name="fault_plugin" value="' . htmlspecialchars($qp_slug) . '">';
+        if (function_exists('qp_nonce_field')) qp_nonce_field('qp_clear_faults');
+        echo '<button type="submit" class="btn btn-sm btn-outline-secondary">' . (!empty($qp_fault['fatal']) ? 'Resume' : 'Clear') . '</button></form></td>';
+        echo '</tr>';
+    }
+    echo '</table></div>';
+}
 // Helper: read plugin header metadata from plugin.php (similar to WP-style headers)
 function parse_plugin_header(string $filepath): array {
     $defaults = [
@@ -209,18 +248,19 @@ function parse_plugin_header(string $filepath): array {
         return $defaults;
     }
     $contents = file_get_contents($filepath, false, null, 0, 8192);
-    $lines = preg_split('/\r?\n/', $contents);
+    // Headers live in the first comment block only, so code further down (e.g. `version: '1.0',`) is never read as one.
+    if (preg_match('~/\*.*?\*/~s', (string)$contents, $block)) $contents = $block[0];
+    $lines = preg_split('/\r?\n/', (string)$contents);
     $meta = $defaults;
     foreach ($lines as $line) {
-        $line = trim($line);
+        // Drop comment markers: "/**", " * Version: 1.0", "*/", "# ", "// ".
+        $line = trim(preg_replace('~^\s*(?:/\*+|\*+/?|#|//)\s?~', '', $line));
         if (strpos($line, ':') === false) continue;
         foreach ($defaults as $key => $_) {
-            if (stripos($line, $key . ':') === 0) {
+            if (stripos($line, $key . ':') === 0 && $meta[$key] === '') {
                 $meta[$key] = trim(substr($line, strlen($key) + 1));
             }
         }
-        // stop reading headers after an empty line
-        if ($line === '') break;
     }
     return $meta;
 }

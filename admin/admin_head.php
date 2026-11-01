@@ -292,11 +292,18 @@ if (is_dir($plugin_dir)) {
         $stmt_upd->execute([json_encode($updated_active_plugins)]);
         $active_plugins = $updated_active_plugins;
     }
+    // A plugin that ended a request with a fatal error is paused in the admin (not on the site) until someone presses
+    // Resume on the Plugins screen, so the admin always stays reachable to fix it (C10).
+    $qp_paused = [];
+    foreach (function_exists('qp_plugin_faults') ? qp_plugin_faults() : [] as $qp_fault) {
+        if (!empty($qp_fault['fatal'])) $qp_paused[(string)$qp_fault['plugin']] = true;
+    }
     foreach ($active_plugins as $plugin => $_) {
         $plugin_file = $plugin_dir . $plugin . '/plugin.php';
-        if (is_file($plugin_file)) {
-            include_once $plugin_file;
-        }
+        if (!is_file($plugin_file) || isset($qp_paused[$plugin])) continue;
+        // One plugin at a time: a plugin that throws is skipped and its hooks taken back; the rest still load.
+        $qp_hooks_before = qp_hooks_snapshot((string)$plugin);
+        try { include_once $plugin_file; } catch (Throwable $qp_e) { qp_plugin_load_failed((string)$plugin, $qp_e, $qp_hooks_before); } finally { qp_hooks_log_stop(); }
     }
 }
 

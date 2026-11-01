@@ -30,7 +30,10 @@ try {
             $slug = is_string($plugin) && !is_numeric($plugin) ? $plugin : (is_string($_) ? $_ : null);
             if (!$slug) continue;
             $plugin_file = $plugin_dir . $slug . '/plugin.php';
-            if (is_file($plugin_file)) include_once $plugin_file;
+            if (!is_file($plugin_file)) continue;
+            // One plugin at a time: a plugin that throws is skipped and its hooks taken back; the rest still load (C10).
+            $qp_hooks_before = qp_hooks_snapshot($slug);
+            try { include_once $plugin_file; } catch (Throwable $qp_e) { qp_plugin_load_failed($slug, $qp_e, $qp_hooks_before); } finally { qp_hooks_log_stop(); }
         }
     }
 } catch (Throwable $_) {
@@ -93,6 +96,9 @@ $hook_nopriv = "iitcm_ajax_nopriv_{$action}";
 
 // Dispatch with request data
 $args = [$_REQUEST];
+
+// A handler that throws is skipped and logged (C10); answer a JSON 500 rather than an empty reply.
+register_shutdown_function('qp_ajax_report_hook_failure', qp_hook_error_count());
 
 if (is_logged_in()) {
     if (!do_action($hook_logged_in, ...$args)) {

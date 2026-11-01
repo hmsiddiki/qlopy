@@ -78,6 +78,7 @@ function add_admin_action(string $hook_name, callable $callback, int $priority =
         }
     }
     $qlopy_admin_actions[$hook_name][$priority][] = [$callback, $accepted_args];
+    if (isset($GLOBALS['qp_hook_log'])) $GLOBALS['qp_hook_log'][] = ['qlopy_admin_actions', $hook_name, $priority];
 }
 
 /**
@@ -93,7 +94,12 @@ function do_admin_action(string $hook_name, ...$args): bool {
         foreach ($callbacks as $callback_info) {
             list($callback, $accepted_args) = $callback_info;
             $callback_args = array_slice($args, 0, $accepted_args);
-            call_user_func_array($callback, $callback_args);
+            try {
+                call_user_func_array($callback, $callback_args);
+            } catch (Throwable $e) {
+                // Same isolation as do_action() (includes/ajax-hooks.php, C10).
+                if (function_exists('qp_hook_failed')) qp_hook_failed($hook_name, $callback, $e); else throw $e;
+            }
         }
     }
     return true;

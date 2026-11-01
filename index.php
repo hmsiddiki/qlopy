@@ -48,7 +48,9 @@ if (isset($_GET['qp_rest']) || strpos($_SERVER['REQUEST_URI'] ?? '', '/api/') !=
         if (is_array($active_plugins) && is_dir($plugin_dir)) {
             foreach ($active_plugins as $plugin => $v) {
                 $slug = is_string($plugin) && !is_numeric($plugin) ? $plugin : (is_string($v) ? $v : null);
-                if ($slug && is_file($plugin_dir . $slug . '/plugin.php')) include_once $plugin_dir . $slug . '/plugin.php';
+                if (!$slug || !is_file($plugin_dir . $slug . '/plugin.php')) continue;
+                $qp_hooks_before = qp_hooks_snapshot($slug);   // one plugin at a time; a failing one is skipped (C10)
+                try { include_once $plugin_dir . $slug . '/plugin.php'; } catch (Throwable $qp_e) { qp_plugin_load_failed($slug, $qp_e, $qp_hooks_before); } finally { qp_hooks_log_stop(); }
             }
         }
         qp_rest_finish($qp_rest_route);   // answers and exits, or returns when nobody registered this namespace
@@ -242,7 +244,9 @@ if (is_array($active_plugins) && is_dir($plugin_dir)) {
         if (!$slug) continue;
         $plugin_file = $plugin_dir . $slug . '/plugin.php';
         if (is_file($plugin_file)) {
-            include_once $plugin_file;
+            // One plugin at a time: a plugin that throws is skipped and its hooks taken back; the rest still load (C10).
+            $qp_hooks_before = qp_hooks_snapshot($slug);
+            try { include_once $plugin_file; } catch (Throwable $qp_e) { qp_plugin_load_failed($slug, $qp_e, $qp_hooks_before); } finally { qp_hooks_log_stop(); }
         }
     }
 }
