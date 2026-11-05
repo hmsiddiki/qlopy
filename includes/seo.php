@@ -241,7 +241,11 @@ function qp_seo_title(): string {
     if ($c['type'] === 'other') $vars['%title%'] = (string)($GLOBALS['page_title'] ?? '');
     $key = ['home' => 'title_home', 'singular' => 'title_singular', 'term' => 'title_term', 'archive' => 'title_archive', 'search' => 'title_search', 'other' => 'title_singular'][$c['type']] ?? 'title_404';
     $tpl = (string)$s[$key];
-    if ($c['type'] === 'archive') { $vars['%title%'] = ucfirst((string)$c['post_type']); }
+    if ($c['type'] === 'archive') {   // the post type's label ("Tour Packages"), not its key ("travely_tour")
+        $types = function_exists('get_post_types') ? get_post_types() : [];
+        $label = (string)($types[(string)$c['post_type']]['label'] ?? '');
+        $vars['%title%'] = $label !== '' ? $label : ucfirst((string)$c['post_type']);
+    }
     if ($c['type'] === 'home' && $post) { $vars['%title%'] = qp_seo_post_title($post); }
     $override = $id ? qp_seo_item_meta($id, '_seo_title') : '';
     $title = qp_seo_expand($override !== '' ? $override : $tpl, $vars);

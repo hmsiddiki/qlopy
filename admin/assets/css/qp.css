@@ -200,7 +200,7 @@ ease;
 /* TinyMCE overlay guards: prevent invisible layers blocking clicks */
 .tox-tinymce-aux { pointer-events: none; background: transparent !important; }
 .tox-notifications-container { pointer-events: none; }
-.tox-dialog, .tox-menu { pointer-events: auto; }
+.tox-dialog, .tox-menu, .tox-pop { pointer-events: auto; }   /* .tox-pop: the toolbar that pops up on a clicked image */
 .content-editor-wrap { position: relative; }
 
 /* Highlight Qlopy Media button in TinyMCE toolbar */

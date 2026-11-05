@@ -11,6 +11,62 @@
       return id;
     }
 
+    // The toolbar, the same in the post editor and every qpmeta rich-text field. Row 2 (WordPress's "kitchen sink") is shown or hidden
+    // by the last button of row 1; the choice is remembered across editors and page loads.
+    var TOOLBAR = [
+      'blocks | bold italic | bullist numlist blockquote | alignleft aligncenter alignright | link addmedia | code qpsink',
+      'underline strikethrough hr | forecolor backcolor | pastetext removeformat | charmap table | outdent indent | undo redo | fullscreen'
+    ];
+    var SINK_KEY = 'qpTinyKitchenSink';
+    function sinkOpen(){ try { return localStorage.getItem(SINK_KEY) === '1'; } catch(e) { return false; } }
+    // Added to the admin page once: hides row 2 of an editor whose container has .qp-tiny-sink-off, and tightens the gaps between button
+    // groups (TinyMCE's are wide) so each row stays on one line on a normal screen.
+    function sinkStyle(){
+      if (document.getElementById('qp-tiny-sink-css')) return;
+      var s = document.createElement('style');
+      s.id = 'qp-tiny-sink-css';
+      s.textContent = '.qp-tiny-sink-off .tox-toolbar-overlord > .tox-toolbar:nth-child(n+2){display:none}' +
+        '.qp-tiny .tox-toolbar__group{padding:0 4px}';
+      document.head.appendChild(s);
+    }
+
+    // Buttons every editor gets on top of TinyMCE's own: the row 2 toggle and the toolbar that appears on a clicked image.
+    function registerExtras(editor){
+      editor.ui.registry.addToggleButton('qpsink', {
+        icon: 'more-drawer',
+        tooltip: 'Toolbar toggle',
+        onAction: function(api){
+          var open = !api.isActive();
+          api.setActive(open);
+          try { localStorage.setItem(SINK_KEY, open ? '1' : '0'); } catch(e) {}
+          var c = editor.getContainer();
+          if (c) c.classList.toggle('qp-tiny-sink-off', !open);
+        },
+        onSetup: function(api){ api.setActive(sinkOpen()); return function(){}; }
+      });
+      editor.on('init', function(){
+        sinkStyle();
+        var c = editor.getContainer();
+        if (c) { c.classList.add('qp-tiny'); c.classList.toggle('qp-tiny-sink-off', !sinkOpen()); }
+      });
+
+      // Image alignment, the WordPress way: a class (alignleft / aligncenter / alignright) on the <img>, styled by the theme on the site.
+      editor.ui.registry.addButton('qpalignnone', {
+        icon: 'align-none',
+        tooltip: 'No alignment',
+        onAction: function(){
+          ['alignleft', 'aligncenter', 'alignright'].forEach(function(f){ editor.formatter.remove(f); });
+          editor.nodeChanged();
+        }
+      });
+      editor.ui.registry.addContextToolbar('qpimage', {
+        predicate: function(node){ return node.nodeName === 'IMG'; },
+        items: 'alignleft aligncenter alignright qpalignnone | image',
+        position: 'node',
+        scope: 'node'
+      });
+    }
+
     function initTinyOnTextarea($ta, config){
       // Skip if inside hidden prototype; initialize only when visible
       var isHiddenProto = $ta.closest('.qpmeta-repeatable-prototype').length > 0 || !$ta.is(':visible');
@@ -25,16 +81,32 @@
         menubar: false,
         branding: false,
         promotion: false,
-        plugins: 'link lists image code',
-        // remove the default image toolbar button; we'll register a custom `addmedia` button
-        toolbar: 'blocks | bold italic underline | alignleft aligncenter alignright | bullist numlist | link addmedia | code',
+        plugins: 'link lists image code charmap table fullscreen',
+        // no default image toolbar button; the custom `addmedia` button opens the media library
+        toolbar: TOOLBAR,
         block_formats: 'Paragraph=p; Heading 1=h1; Heading 2=h2; Heading 3=h3; Heading 4=h4; Heading 5=h5; Heading 6=h6;',
         toolbar_mode: 'wrap',
         convert_urls: true,
         relative_urls: false,
         remove_script_host: false,
         paste_as_text: true,
-        valid_elements: 'a[href|target],strong/b,em/i,u,blockquote,code,pre,br,span[style],p[class|style],h1,h2,h3,h4,h5,h6,ul,ol,li,img[src|alt|title|width|height],table,tr,td,th,thead,tbody,figure,figcaption',
+        // What survives saving. class and style are kept (image alignment classes, colours, indents, WordPress content brought over).
+        valid_elements: 'a[href|target|rel|title|class],strong/b,em/i,u,s,strike,del,sub,sup,blockquote[class|style],code,pre[class],br,hr,' +
+          'span[class|style],p[class|style],div[class|style],h1[class|style|id],h2[class|style|id],h3[class|style|id],h4[class|style|id],h5[class|style|id],h6[class|style|id],' +
+          'ul[class|style],ol[class|style|start|type],li[class|style],img[src|alt|title|width|height|class|style|loading],' +
+          'table[class|style|border|cellpadding|cellspacing|width],caption,colgroup,col[width|span|style],thead,tbody,tfoot,' +
+          'tr[class|style],td[class|style|colspan|rowspan|width],th[class|style|colspan|rowspan|width|scope],figure[class|style],figcaption[class]',
+        // Alignment on an image (or figure / table) is a class, as WordPress does it, not an inline float; text keeps text-align.
+        formats: {
+          alignleft:   [{ selector: 'p,h1,h2,h3,h4,h5,h6,td,th,div,ul,ol,li,pre,blockquote', styles: { textAlign: 'left' } },   { selector: 'img,figure,table', classes: 'alignleft' }],
+          aligncenter: [{ selector: 'p,h1,h2,h3,h4,h5,h6,td,th,div,ul,ol,li,pre,blockquote', styles: { textAlign: 'center' } }, { selector: 'img,figure,table', classes: 'aligncenter' }],
+          alignright:  [{ selector: 'p,h1,h2,h3,h4,h5,h6,td,th,div,ul,ol,li,pre,blockquote', styles: { textAlign: 'right' } },  { selector: 'img,figure,table', classes: 'alignright' }]
+        },
+        // Inside the editor only (its own iframe): how those classes look while writing. The site's look is up to its theme.
+        content_style: 'img{max-width:100%;height:auto}' +
+          '.alignleft{float:left;margin:.3em 1.5em 1em 0}.alignright{float:right;margin:.3em 0 1em 1.5em}' +
+          '.aligncenter{display:block;margin-left:auto;margin-right:auto}' +
+          'body::after{content:"";display:table;clear:both}',
         images_upload_handler: function(blobInfo, progress){
           return new Promise(function(resolve, reject){
             var fd = new FormData();
@@ -109,6 +181,7 @@
       finalConfig.setup = (finalConfig.setup ? (function(orig){
         return function(editor){
           try { orig(editor); } catch(e){}
+          try { registerExtras(editor); } catch(e){}
           // register Add Media button
           try {
             editor.ui.registry.addButton('addmedia', {
@@ -170,6 +243,7 @@
           });
         };
       })(finalConfig.setup) : function(editor){
+        try { registerExtras(editor); } catch(e){}
         try {
           editor.ui.registry.addButton('addmedia', {
             icon: 'image',
@@ -284,7 +358,7 @@
       if ($main.length) {
         initTinyOnTextarea($main, {
             // Keep blocks dropdown for main editor
-            toolbar: 'blocks | bold italic underline | alignleft aligncenter alignright | bullist numlist | link addmedia | code',
+            toolbar: TOOLBAR,
             contextmenu: 'paste | link image inserttable'
           });
       }
@@ -293,7 +367,7 @@
       $('textarea.qpmeta-richtext, .qpmeta-richtext textarea').each(function(){
         var $ta = $(this);
         initTinyOnTextarea($ta, {
-          toolbar: 'blocks | bold italic underline | alignleft aligncenter alignright | bullist numlist | link addmedia | code'
+          toolbar: TOOLBAR,
         });
       });
 
@@ -304,7 +378,7 @@
           ($ctx.length ? $ctx : $(document)).find('textarea.qpmeta-richtext, .qpmeta-richtext textarea').each(function(){
             var $ta = $(this);
             initTinyOnTextarea($ta, {
-              toolbar: 'blocks | bold italic underline | alignleft aligncenter alignright | bullist numlist | link addmedia | code'
+              toolbar: TOOLBAR,
             });
           });
         } catch(e) {}
