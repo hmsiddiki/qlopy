@@ -6,7 +6,7 @@ if (!defined('QLOPY_INIT')) { http_response_code(403); exit; }
 if (!defined('QLP_INCLUDED_QP_MAIL')) define('QLP_INCLUDED_QP_MAIL', true);
 
 // Path to bundled PHPMailer (app may include later when sending)
-define('QP_MAIL_PHPM_HEADER_PATH', __DIR__ . '/helper_library/PHPMailer-7.0.1/src/');
+define('QP_MAIL_PHPM_HEADER_PATH', __DIR__ . '/helper_library/PHPMailer/src/');
 
 define('QP_MAIL_SETTINGS_KEY', 'qp_mail_settings');
 
