@@ -88,16 +88,21 @@ function qp_mail_decrypt(string $ciphertext): string {
 }
 
 // Settings storage
+// Filter `qp_mail_settings` ($settings) can adjust them per request (tests point mail at a local server with it).
 function qp_mail_get_settings(): array {
+    $s = [];
     if (function_exists('get_option_meta')) {
         $s = @get_option_meta(QP_MAIL_SETTINGS_KEY);
-        if (is_array($s)) return $s;
     }
-    if (function_exists('get_option')) {
+    if (!is_array($s) && function_exists('get_option')) {
         $s = @get_option(QP_MAIL_SETTINGS_KEY, []);
-        return is_array($s) ? $s : [];
     }
-    return [];
+    $s = is_array($s) ? $s : [];
+    if (function_exists('apply_filters')) {
+        $f = apply_filters('qp_mail_settings', $s);
+        if (is_array($f)) $s = $f;
+    }
+    return $s;
 }
 
 function qp_mail_update_settings(array $settings): bool {
@@ -210,6 +215,126 @@ function qp_mail_enqueue(array $payload): bool {
     return true;
 }
 
+// Normalise caller headers (string, numeric array of "Name: value" lines, or associative array) into
+// [lines, map-with-lowercase-names]. Internal `qp_` keys (qp_queue, qp_text_body) are never emitted as headers.
+function qp_mail_normalize_headers($headers): array {
+    $header_lines = [];
+    $header_map = [];
+    $add_line = function (string $line) use (&$header_lines, &$header_map) {
+        $line = trim($line);
+        if ($line === '') return;
+        $header_lines[] = $line;
+        if (strpos($line, ':') !== false) {
+            [$hn, $hv] = explode(':', $line, 2);
+            $header_map[strtolower(trim($hn))] = trim($hv);
+        }
+    };
+    if (is_string($headers) && trim($headers) !== '') {
+        foreach (preg_split('/\r\n|\n|\r/', $headers) as $line) $add_line($line);
+    } elseif (is_array($headers)) {
+        $is_assoc = false;
+        foreach ($headers as $k => $_v) { if (!is_int($k)) { $is_assoc = true; break; } }
+        if ($is_assoc) {
+            foreach ($headers as $k => $v) {
+                if (is_string($k) && strpos($k, 'qp_') === 0) continue;
+                if (is_array($v) || is_object($v)) continue;
+                $hn = trim((string)$k);
+                $hv = trim((string)$v);
+                if ($hn === '' || $hv === '') continue;
+                $header_lines[] = $hn . ': ' . $hv;
+                $header_map[strtolower($hn)] = $hv;
+            }
+        } else {
+            foreach ($headers as $line) if (is_scalar($line)) $add_line((string)$line);
+        }
+    }
+    return [$header_lines, $header_map];
+}
+
+// A sender's own plain-text version, passed as headers['qp_text_body'] (associative headers only). Null when none.
+function qp_mail_given_text($headers): ?string {
+    if (is_array($headers) && isset($headers['qp_text_body']) && is_string($headers['qp_text_body']) && trim($headers['qp_text_body']) !== '') {
+        return $headers['qp_text_body'];
+    }
+    return null;
+}
+
+// Is this message HTML? An explicit Content-Type wins; otherwise $default when given, else a look at the body.
+function qp_mail_message_is_html(string $message, array $header_map, ?bool $default = null): bool {
+    $ct = strtolower((string)($header_map['content-type'] ?? ''));
+    if (strpos($ct, 'text/plain') !== false) return false;
+    if (strpos($ct, 'text/html') !== false) return true;
+    if ($default !== null) return $default;
+    return (bool)preg_match('/<(?:!doctype|html|body|p|br|div|a|table|h[1-6])\b/i', $message);
+}
+
+// Plain-text version of an HTML email. Core's own converter (no PHPMailer code is used, so a PHPMailer update cannot
+// change it): keeps link targets ("Label (https://...)"), turns blocks, line breaks and list items into lines, drops
+// head/style/script, decodes entities. Filter `qp_mail_text_version` ($text, $html) can replace the result.
+function qp_mail_text_version(string $html): string {
+    $s = preg_replace('/<!--.*?-->/s', '', $html);
+    $s = preg_replace('/<(head|title|style|script)\b[^>]*>.*?<\/\1\s*>/is', '', $s);
+    $s = preg_replace('/\s+/u', ' ', $s); // HTML whitespace is not significant; tags below decide the line breaks
+    $s = preg_replace_callback('/<img\b[^>]*\balt\s*=\s*("([^"]*)"|\'([^\']*)\')[^>]*>/i', function ($m) {
+        return ' ' . ($m[2] !== '' ? $m[2] : ($m[3] ?? '')) . ' ';
+    }, $s);
+    $s = preg_replace_callback('/<a\b[^>]*\bhref\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>]+))[^>]*>(.*?)<\/a\s*>/is', function ($m) {
+        $raw = ($m[2] ?? '') !== '' ? $m[2] : ((($m[3] ?? '') !== '') ? $m[3] : ($m[4] ?? ''));
+        $href = html_entity_decode(trim($raw), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $inner = $m[5] ?? '';
+        $label = trim(html_entity_decode(strip_tags($inner), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        if ($href === '' || $href[0] === '#' || stripos($href, 'javascript:') === 0) return $inner;
+        $bare = preg_replace('/^mailto:/i', '', $href);
+        // re-escaped so strip_tags/entity decoding below leave the URL exactly as it was (a "&copy=" query stays)
+        $shown = htmlspecialchars($bare, ENT_QUOTES, 'UTF-8');
+        if ($label === '' || $label === $href || $label === $bare || rtrim($label, '/') === rtrim($href, '/')) return $shown;
+        return $inner . ' (' . $shown . ')';
+    }, $s);
+    $s = preg_replace('/<br\b[^>]*>/i', "\n", $s);
+    $s = preg_replace('/<li\b[^>]*>/i', "\n- ", $s);
+    $s = preg_replace('/<\/?(?:p|div|h[1-6]|table|ul|ol|blockquote|pre|section|article|header|footer|hr)\b[^>]*>/i', "\n\n", $s);
+    $s = preg_replace('/<\/tr\s*>/i', "\n", $s);
+    $s = preg_replace('/<\/t[dh]\s*>/i', '  ', $s);
+    $s = strip_tags($s);
+    $s = html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $s = str_replace("\xC2\xA0", ' ', $s);
+    $lines = array_map(function ($l) { return trim(preg_replace('/[ \t]+/', ' ', $l)); }, explode("\n", $s));
+    $s = trim(preg_replace("/\n{3,}/", "\n\n", implode("\n", $lines)));
+    return function_exists('apply_filters') ? (string)apply_filters('qp_mail_text_version', $s, $html) : $s;
+}
+
+// Give a PHPMailer HTML message its text part (sender's own text when given, else generated). Plain messages untouched.
+function qp_mail_set_alt_body($mail, ?string $text = null): void {
+    if ($mail->ContentType !== 'text/html') return;
+    $alt = $text !== null ? $text : qp_mail_text_version((string)$mail->Body);
+    if (trim($alt) !== '') $mail->AltBody = $alt;
+}
+
+// multipart/alternative headers and body for PHP mail(): the caller's headers minus their content headers, then a
+// base64 text/plain part followed by the text/html part (base64 keeps every line short). Returns [headers, body].
+function qp_mail_alternative_mime(string $html, ?string $text, array $header_lines, string $charset = 'UTF-8'): array {
+    $text = $text !== null ? $text : qp_mail_text_version($html);
+    $charset = preg_match('/^[A-Za-z0-9\-_]+$/', $charset) ? $charset : 'UTF-8';
+    $boundary = 'qp_alt_' . bin2hex(random_bytes(12));
+    $keep = [];
+    foreach ($header_lines as $line) {
+        $name = strtolower(trim((string)strstr($line, ':', true)));
+        if (in_array($name, ['content-type', 'content-transfer-encoding', 'mime-version'], true)) continue;
+        $keep[] = $line;
+    }
+    $keep[] = 'MIME-Version: 1.0';
+    $keep[] = 'Content-Type: multipart/alternative; boundary="' . $boundary . '"';
+    $part = function (string $type, string $content) use ($boundary, $charset) {
+        return '--' . $boundary . "\r\nContent-Type: " . $type . '; charset=' . $charset . "\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+            . chunk_split(base64_encode($content), 76, "\r\n");
+    };
+    $body = "This is a multi-part message in MIME format.\r\n\r\n"
+        . ($text !== '' ? $part('text/plain', $text) : '')
+        . $part('text/html', $html)
+        . '--' . $boundary . "--\r\n";
+    return [implode("\r\n", $keep), $body];
+}
+
 // Public wrapper - minimal: supports queue flag via headers['qp_queue'] or settings.use_queue
 function qp_mail($to, $subject, $message, $headers = [], $attachments = []) {
     $settings = qp_mail_get_settings();
@@ -219,58 +344,14 @@ function qp_mail($to, $subject, $message, $headers = [], $attachments = []) {
         return true;
     }
     // Immediate send: try using PHPMailer if available; otherwise fallback to mail()
-    // We'll include a lightweight PHPMailer usage if library present
-    // prepare a headers string for the mail() fallback and a map for PHPMailer
-    $headers_string = null;
+    // Headers are normalised before PHPMailer is touched, so the mail() fallback keeps them even when PHPMailer is missing.
+    [$header_lines, $header_map] = qp_mail_normalize_headers($headers);
+    $headers_string = !empty($header_lines) ? implode("\r\n", $header_lines) . "\r\n" : null;
+    $text = qp_mail_given_text($headers);
     $debugLines = [];
     try {
         $mail = qp_mail_prepare_phpmailer($settings);
         qp_mail_capture_debug($mail, $debugLines);
-
-        // Normalize headers into lines and map (accept string, numeric array of header lines, or associative array)
-        $header_lines = [];
-        $header_map = [];
-        if (is_string($headers) && trim($headers) !== '') {
-            $lines = preg_split('/\r\n|\n|\r/', $headers);
-            foreach ($lines as $line) {
-                $line = trim($line);
-                if ($line === '') continue;
-                $header_lines[] = $line;
-                if (strpos($line, ':') !== false) {
-                    [$hn, $hv] = explode(':', $line, 2);
-                    $header_map[strtolower(trim($hn))] = trim($hv);
-                }
-            }
-        } elseif (is_array($headers)) {
-            // detect associative vs numeric array
-            $is_assoc = false;
-            foreach ($headers as $k => $_v) { if (!is_int($k)) { $is_assoc = true; break; } }
-            if ($is_assoc) {
-                foreach ($headers as $k => $v) {
-                    // skip internal qp_ keys
-                    if (is_string($k) && strpos($k, 'qp_') === 0) continue;
-                    $hn = trim((string)$k);
-                    $hv = trim((string)$v);
-                    if ($hn === '' || $hv === '') continue;
-                    $header_lines[] = $hn . ': ' . $hv;
-                    $header_map[strtolower($hn)] = $hv;
-                }
-            } else {
-                foreach ($headers as $line) {
-                    $line = trim((string)$line);
-                    if ($line === '') continue;
-                    $header_lines[] = $line;
-                    if (strpos($line, ':') !== false) {
-                        [$hn, $hv] = explode(':', $line, 2);
-                        $header_map[strtolower(trim($hn))] = trim($hv);
-                    }
-                }
-            }
-        }
-
-        if (!empty($header_lines)) {
-            $headers_string = implode("\r\n", $header_lines) . "\r\n";
-        }
 
         // Apply common headers to PHPMailer
         if (!empty($header_map['from'])) {
@@ -311,14 +392,18 @@ function qp_mail($to, $subject, $message, $headers = [], $attachments = []) {
         if (is_array($to)) foreach ($to as $r) $mail->addAddress($r); else $mail->addAddress($to);
         $mail->Subject = $subject;
         $mail->Body = $message;
+        qp_mail_set_alt_body($mail, $text);
         if (!empty($attachments) && is_array($attachments)) foreach ($attachments as $a) if (is_string($a) && file_exists($a)) $mail->addAttachment($a);
         $sent = $mail->send();
         qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>$settings['transport'] ?? 'mail','status'=>$sent ? 'sent' : 'failed','error' => $sent ? '' : $mail->ErrorInfo,'meta'=>['debug'=>implode("\n", $debugLines)]]);
         return (bool)$sent;
     } catch (Throwable $e) {
-        // Fallback to PHP mail() — include headers string if available
+        // Fallback to PHP mail() — include headers string if available; HTML goes out as multipart/alternative
         $to_str = is_array($to) ? implode(',', $to) : $to;
-        if ($headers_string !== null) {
+        if (qp_mail_message_is_html((string)$message, $header_map)) {
+            [$alt_headers, $alt_body] = qp_mail_alternative_mime((string)$message, $text, $header_lines, $settings['charset'] ?? 'UTF-8');
+            $ok = @mail($to_str, $subject, $alt_body, $alt_headers);
+        } elseif ($headers_string !== null) {
             $ok = @mail($to_str, $subject, $message, $headers_string);
         } else {
             $ok = @mail($to_str, $subject, $message);
@@ -710,6 +795,9 @@ function qp_mail_send_payload(array $payload): bool {
     $message = $payload['message'] ?? '';
     $headers = $payload['headers'] ?? [];
     $attachments = $payload['attachments'] ?? [];
+    [$header_lines, $header_map] = qp_mail_normalize_headers($headers);
+    $text = isset($payload['text']) && is_string($payload['text']) && trim($payload['text']) !== '' ? $payload['text'] : qp_mail_given_text($headers);
+    $is_html = qp_mail_message_is_html((string)$message, $header_map, true);
 
     $debugLines = [];
     try {
@@ -718,6 +806,8 @@ function qp_mail_send_payload(array $payload): bool {
         if (is_array($to)) foreach ($to as $r) $mail->addAddress($r); else $mail->addAddress($to);
         $mail->Subject = $subject;
         $mail->Body = $message;
+        if (!$is_html) $mail->isHTML(false); // a queued text/plain message stays a single plain part
+        qp_mail_set_alt_body($mail, $text);
         if (!empty($attachments) && is_array($attachments)) foreach ($attachments as $a) if (is_string($a) && file_exists($a)) $mail->addAttachment($a);
         $sent = $mail->send();
         qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>$transport,'status'=>$sent ? 'sent' : 'failed','error' => $sent ? '' : $mail->ErrorInfo,'meta'=>['debug'=>implode("\n", $debugLines)]]);
@@ -728,7 +818,7 @@ function qp_mail_send_payload(array $payload): bool {
         $sg_key = $settings['sendgrid_api_key'] ?? '';
         if (!empty($sg_key)) {
             try {
-                $sgres = qp_mail_send_via_sendgrid_api(['to'=>$to,'subject'=>$subject,'message'=>$message,'attachments'=>$attachments], $sg_key, $settings);
+                $sgres = qp_mail_send_via_sendgrid_api(['to'=>$to,'subject'=>$subject,'message'=>$message,'text'=>$text,'is_html'=>$is_html,'attachments'=>$attachments], $sg_key, $settings);
                 $ok = is_array($sgres) ? ($sgres['ok'] ?? false) : (bool)$sgres;
                 $debug = 'sendgrid_api_attempt';
                 if (is_array($sgres)) $debug .= ' code=' . ($sgres['code'] ?? '') . ' resp=' . ($sgres['response'] ?? '');
@@ -737,7 +827,13 @@ function qp_mail_send_payload(array $payload): bool {
             } catch (Throwable $_e) { /* continue to fallback */ }
         }
         try {
-            $ok = @mail(is_array($to) ? implode(',', $to) : $to, $subject, $message);
+            $to_str = is_array($to) ? implode(',', $to) : $to;
+            if ($is_html) {
+                [$alt_headers, $alt_body] = qp_mail_alternative_mime((string)$message, $text, $header_lines, $settings['charset'] ?? 'UTF-8');
+                $ok = @mail($to_str, $subject, $alt_body, $alt_headers);
+            } else {
+                $ok = @mail($to_str, $subject, $message, !empty($header_lines) ? implode("\r\n", $header_lines) : '');
+            }
             qp_mail_log(['to'=>$to,'subject'=>$subject,'message'=>$message,'headers'=>$headers,'attachments'=>$attachments,'transport'=>'mail','status'=>$ok ? 'sent' : 'failed','error'=>$ok? '': $e->getMessage(),'meta'=>['debug'=>implode("\n", $debugLines)]]);
             return (bool)$ok;
         } catch (Throwable $_e) {
@@ -747,41 +843,10 @@ function qp_mail_send_payload(array $payload): bool {
     }
 }
 
-// Send via SendGrid Web API (v3). Accepts payload with to (string or array), subject, message, attachments.
+// Send via SendGrid Web API (v3). Accepts payload with to (string or array), subject, message, attachments,
+// and optionally text (own plain-text version) and is_html (false = send message as text/plain only).
 function qp_mail_send_via_sendgrid_api(array $payload, string $api_key, array $settings = [], int $max_attempts = 3): array {
-    $to = $payload['to'] ?? '';
-    $subject = $payload['subject'] ?? '';
-    $message = $payload['message'] ?? '';
-    $from = qp_mail_default_from($settings);
-    $personalizations = [];
-    if (is_array($to)) {
-        $tos = array_map(function($t){ return ['email'=> (string)$t]; }, $to);
-        $personalizations[] = ['to'=>$tos];
-    } else {
-        $personalizations[] = ['to'=>[['email'=> (string)$to]]];
-    }
-    $body = ['personalizations'=>$personalizations, 'from'=>['email'=>$from], 'subject'=>$subject, 'content'=>[['type'=>'text/html','value'=>$message]]];
-
-    // Attachments handling: accept array of ['path'=>'/abs/file','filename'=>'name.ext'] or ['name'=>'file.txt','content'=>'base64...']
-    if (!empty($payload['attachments']) && is_array($payload['attachments'])) {
-        $body['attachments'] = [];
-        foreach ($payload['attachments'] as $att) {
-            if (is_string($att) && file_exists($att)) {
-                $content = base64_encode(file_get_contents($att));
-                $body['attachments'][] = ['content'=>$content, 'filename'=>basename($att)];
-            } elseif (is_array($att)) {
-                if (!empty($att['path']) && file_exists($att['path'])) {
-                    $content = base64_encode(file_get_contents($att['path']));
-                    $body['attachments'][] = ['content'=>$content, 'filename'=>$att['filename'] ?? basename($att['path'])];
-                } elseif (!empty($att['content']) && !empty($att['name'])) {
-                    $content = $att['is_base64'] ?? false ? $att['content'] : base64_encode($att['content']);
-                    $body['attachments'][] = ['content'=>$content, 'filename'=>$att['name']];
-                }
-            }
-        }
-    }
-
-    $json = json_encode($body);
+    $json = json_encode(qp_mail_sendgrid_body($payload, $settings));
 
     $attempt = 0;
     $lastResp = null;
@@ -809,6 +874,50 @@ function qp_mail_send_via_sendgrid_api(array $payload, string $api_key, array $s
     }
 
     return $lastResp ?: ['ok'=>false,'code'=>0,'response'=>null,'attempts'=>$attempt];
+}
+
+// The SendGrid v3 request body for a payload (split out so it can be checked without a network call).
+function qp_mail_sendgrid_body(array $payload, array $settings = []): array {
+    $to = $payload['to'] ?? '';
+    $subject = $payload['subject'] ?? '';
+    $message = $payload['message'] ?? '';
+    $from = qp_mail_default_from($settings);
+    $personalizations = [];
+    if (is_array($to)) {
+        $tos = array_map(function($t){ return ['email'=> (string)$t]; }, $to);
+        $personalizations[] = ['to'=>$tos];
+    } else {
+        $personalizations[] = ['to'=>[['email'=> (string)$to]]];
+    }
+    // SendGrid wants text/plain before text/html in `content`.
+    if (($payload['is_html'] ?? true) === false) {
+        $content = [['type'=>'text/plain','value'=>$message]];
+    } else {
+        $text = isset($payload['text']) && is_string($payload['text']) && trim($payload['text']) !== '' ? $payload['text'] : qp_mail_text_version((string)$message);
+        $content = $text !== '' ? [['type'=>'text/plain','value'=>$text], ['type'=>'text/html','value'=>$message]] : [['type'=>'text/html','value'=>$message]];
+    }
+    $body = ['personalizations'=>$personalizations, 'from'=>['email'=>$from], 'subject'=>$subject, 'content'=>$content];
+
+    // Attachments handling: accept array of ['path'=>'/abs/file','filename'=>'name.ext'] or ['name'=>'file.txt','content'=>'base64...']
+    if (!empty($payload['attachments']) && is_array($payload['attachments'])) {
+        $body['attachments'] = [];
+        foreach ($payload['attachments'] as $att) {
+            if (is_string($att) && file_exists($att)) {
+                $content = base64_encode(file_get_contents($att));
+                $body['attachments'][] = ['content'=>$content, 'filename'=>basename($att)];
+            } elseif (is_array($att)) {
+                if (!empty($att['path']) && file_exists($att['path'])) {
+                    $content = base64_encode(file_get_contents($att['path']));
+                    $body['attachments'][] = ['content'=>$content, 'filename'=>$att['filename'] ?? basename($att['path'])];
+                } elseif (!empty($att['content']) && !empty($att['name'])) {
+                    $content = $att['is_base64'] ?? false ? $att['content'] : base64_encode($att['content']);
+                    $body['attachments'][] = ['content'=>$content, 'filename'=>$att['name']];
+                }
+            }
+        }
+    }
+
+    return $body;
 }
 
 // Process queue: fetch eligible items and attempt to send them. Returns summary array.

@@ -399,6 +399,7 @@ add_admin_action('iitcm_admin_ajax_qp_mail_send_dkim_test', function($req){
         $mail->addAddress($to);
         $mail->Subject = 'DKIM test ' . date('c');
         $mail->Body = 'This is a DKIM test message.';
+        qp_mail_set_alt_body($mail);
         $debug = [];
         $mail->Debugoutput = function($str,$lvl) use (&$debug){ $debug[] = trim($str); };
         $sent = $mail->send();
