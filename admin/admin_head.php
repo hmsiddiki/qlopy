@@ -206,6 +206,12 @@ if (!is_logged_in() && (!check_permission('manage_options') || !check_permission
     exit;
 }
 
+// C9: an account that is signed in by another door (a customer from the phone sign-in on the shop) but holds no admin capability
+// gets a 404 and no admin markup, on every admin request: pages, admin AJAX, plugin pages. Same list as the login form.
+if (PHP_SAPI !== 'cli' && is_logged_in() && function_exists('qp_admin_access_allowed') && !qp_admin_access_allowed()) {
+    qp_admin_deny_access();
+}
+
 
 require_once __DIR__ . '/../includes/post-types.php';
 require_once __DIR__ . '/../includes/qpmeta.php';
@@ -857,6 +863,12 @@ add_admin_action('iitcm_admin_ajax_qpmeta_save', function($request) {
     $object_type = $request['object_type'] ?? '';
     $object_id   = isset($request['object_id']) ? (int)$request['object_id'] : 0;
     if (!$object_type || !$object_id) { echo json_encode(['success' => false, 'error' => 'Missing object_type or object_id']); exit; }
+    // C9: it checked nothing, so any signed-in account could overwrite registered site options or any post's meta.
+    if (!function_exists('qpmeta_user_can') || !qpmeta_user_can((string)$object_type, $object_id)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'No permission']);
+        exit;
+    }
     $errors  = [];
     $success = qpmeta_save_metaboxes($object_type, $object_id, $request, $_FILES, $errors);
     echo json_encode(['success' => $success, 'error' => $errors ? implode('; ', $errors) : null]);

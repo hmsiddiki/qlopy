@@ -57,6 +57,8 @@ $check = function ($label, $html) use ($rules, $site) {
     ok(!$errors, "$label: " . implode(', ', array_unique(array_column($g['@graph'], '@type'))) . ($errors ? ' -> ' . implode('; ', $errors) : ''));
 };
 $o_enabled = get_option_meta('qp_seo_enabled'); $o_settings = get_option_meta('qp_seo_settings');
+// The product to check: the sample product when the site has one (orcasy), else the first published public product.
+$prodSlug = (string)($pdo->query("SELECT slug FROM " . table_name('posts') . " WHERE slug = 'sample-widget' AND post_type = 'product'")->fetchColumn() ?: $pdo->query("SELECT slug FROM " . table_name('posts') . " WHERE post_type = 'product' AND status = 'published' AND visibility = 'public' AND (post_password IS NULL OR post_password = '') ORDER BY id LIMIT 1")->fetchColumn());
 $T = table_name('posts');
 try {
     update_option_meta('qp_seo_enabled', true);
@@ -65,7 +67,7 @@ try {
     $check('home', get('')['body']);
     $check('post', get('post/welcome-to-your-site')['body']);
     $check('page', get('sample-page')['body']);
-    $check('product', get('product/sample-widget')['body']);
+    $check('product', get('product/' . $prodSlug)['body']);
     $check('shop', get('shop/')['body']);
     $check('search', get('index.php?route=search&q=widget')['body']);
     $check('post list', get('post/')['body']);
@@ -74,9 +76,22 @@ try {
         echo "-- speed with $big products in the table\n";
         passthru('php ' . escapeshellarg(__DIR__ . '/search-seed.php') . ' seed ' . (int)$big . ' zipf > ' . (stripos(PHP_OS, 'WIN') === 0 ? 'NUL' : '/dev/null'));
         $timeit = function ($path, $n = 40) { $c = curl_init(); $t = []; for ($i = 0; $i < $n + 5; $i++) { curl_setopt_array($c, [CURLOPT_URL => $GLOBALS['base'] . '/' . $path, CURLOPT_RESOLVE => [$GLOBALS['host'] . ':' . $GLOBALS['port'] . ':' . $GLOBALS['resolve']], CURLOPT_SSL_VERIFYPEER => false, CURLOPT_SSL_VERIFYHOST => 0, CURLOPT_RETURNTRANSFER => true]); $a = microtime(true); curl_exec($c); if ($i >= 5) $t[] = (microtime(true) - $a) * 1000; } curl_close($c); sort($t); return $t[(int)(count($t) / 2)]; };
-        $pages = ['post' => 'post/welcome-to-your-site', 'product' => 'product/sample-widget', 'home' => ''];
-        update_option_meta('qp_seo_enabled', false); $off = []; foreach ($pages as $k => $p) $off[$k] = $timeit($p);
-        update_option_meta('qp_seo_enabled', true); $on = []; foreach ($pages as $k => $p) $on[$k] = $timeit($p);
+        $pages = ['post' => 'post/welcome-to-your-site', 'product' => 'product/' . $prodSlug, 'home' => ''];
+        // Interleaved: off and on alternate in short rounds, so a background job that slows the machine for a while (the cron worker
+        // after the 50,000-row seed, a sitemap rebuild) lands on both sides instead of on whichever batch happened to run then.
+        $off = []; $on = [];
+        foreach ($pages as $k => $p) {
+            $samples = ['off' => [], 'on' => []];
+            for ($round = 0; $round < 8; $round++) {
+                foreach (['off' => false, 'on' => true] as $side => $enabled) {
+                    update_option_meta('qp_seo_enabled', $enabled);
+                    $samples[$side][] = $timeit($p, 5);
+                }
+            }
+            foreach (['off', 'on'] as $side) { sort($samples[$side]); }
+            $off[$k] = $samples['off'][4]; $on[$k] = $samples['on'][4];
+        }
+        update_option_meta('qp_seo_enabled', true);
         foreach ($pages as $k => $p) echo sprintf("   %-8s module off %.1f ms, on %.1f ms (%+.1f ms)\n", $k, $off[$k], $on[$k], $on[$k] - $off[$k]);
         ok(max(array_map(function ($k) use ($on, $off) { return $on[$k] - $off[$k]; }, array_keys($pages))) < 6, 'the module adds under 6 ms to a page on a large site (median round trip, includes noise)');
         $t = microtime(true); get('index.php?route=archive&post_type=product&paged=3'); $t_arch = (microtime(true) - $t) * 1000;

@@ -44,11 +44,41 @@ try {
     qp_page_cache_purge_all();
     req('sample-page'); // plugins load and declare themselves
 
+    // Form tokens (C14): each visitor gets their own, so pages are compared with the tokens masked.
+    $tokRe = '/qp2\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/';
+    $norm = function ($s) use ($tokRe) { return preg_replace($tokRe, 'TOKEN', (string)$s); };
+    $seedOf = function ($head) { return preg_match('/^Set-Cookie:\s*qp_csrf_seed=([a-f0-9]{64})/mi', $head, $m) ? $m[1] : null; };
+    $otherCookies = function ($head) { return preg_match_all('/^Set-Cookie:\s*+(?!qp_csrf_seed=)/mi', $head); };
+
     echo "-- basics\n";
     $a = req('sample-page'); $b = req('sample-page');
     ok(strpos($a['cache'], 'HIT') === 0 || strpos($a['cache'], 'MISS') === 0, 'ordinary page is stored: ' . $a['cache']);
-    ok(strpos($b['cache'], 'HIT') === 0 && $b['body'] === $a['body'], 'second request is a HIT with the same body');
-    ok(stripos($b['head'], 'set-cookie') === false, 'a HIT sets no cookie');
+    ok(strpos($b['cache'], 'HIT') === 0 && $norm($b['body']) === $norm($a['body']), 'second request is a HIT with the same body (form tokens aside)');
+    ok($otherCookies($b['head']) === 0, 'a HIT sets no cookie but the visitor\'s own form-token seed' . ($otherCookies($b['head']) ? ': ' . preg_replace('/=([^;]{6})[^;]*/', '=$1...', implode(' | ', preg_grep('/^Set-Cookie/i', preg_split('/\r?\n/', $b['head'])))) : ''));
+
+    echo "-- form tokens in cached pages (C14)\n";
+    preg_match_all($tokRe, $b['body'], $tb);
+    if ($tb[0]) {
+        ok(strpos($b['cache'], 'tokens') !== false && stripos($b['head'], 'Cache-Control: private') !== false && stripos($b['head'], "\nETag:") === false, 'a page with tokens is served private, without an ETag: ' . $b['cache']);
+        $seedB = $seedOf($b['head']);
+        ok($seedB !== null, 'a visitor without a seed gets one with the page');
+        // In this process: the tokens the cache made verify for that visitor, for their own action, and for nobody else.
+        $verifies = function (string $token, ?string $seed) {
+            $p = json_decode((string)qp_nonce_base64url_decode(explode('.', $token)[1]), true);
+            $saved = $_COOKIE; $_COOKIE = $seed ? ['qp_csrf_seed' => $seed] : [];
+            $okay = qp_verify_nonce($token, (string)($p['a'] ?? ''));
+            $_COOKIE = $saved;
+            return $okay;
+        };
+        ok($verifies($tb[0][0], $seedB), 'the cache\'s token verifies with qp_verify_nonce() for that visitor (' . json_decode((string)qp_nonce_base64url_decode(explode('.', $tb[0][0])[1]), true)['a'] . ')');
+        $other = bin2hex(random_bytes(32));
+        ok(!$verifies($tb[0][0], $other), 'the same token fails for another visitor');
+        $c = req('sample-page', ['cookie' => 'qp_csrf_seed=' . $other]);
+        preg_match_all($tokRe, $c['body'], $tc);
+        ok(strpos($c['cache'], 'HIT') === 0 && $seedOf($c['head']) === null && $tc[0] && $tc[0][0] !== $tb[0][0] && $verifies($tc[0][0], $other), 'a visitor who has a seed: a HIT, no cookie set, their own token that verifies');
+    } else {
+        ok(true, 'this page has no form token (nothing to check)');
+    }
     $h = req('sample-page', ['head' => true]);
     ok(strpos($h['cache'], 'HIT') !== 0, 'HEAD request is not served from cache: ' . ($h['cache'] ?: '(none)'));
     $par = []; $mh = curl_multi_init(); qp_page_cache_purge_all();
@@ -59,7 +89,7 @@ try {
     }
     do { curl_multi_exec($mh, $run); curl_multi_select($mh, 1); } while ($run > 0);
     $codes = []; $bodies = [];
-    foreach ($par as $c) { $codes[] = curl_getinfo($c, CURLINFO_HTTP_CODE); $bodies[] = md5((string)curl_multi_getcontent($c)); curl_multi_remove_handle($mh, $c); }
+    foreach ($par as $c) { $codes[] = curl_getinfo($c, CURLINFO_HTTP_CODE); $bodies[] = md5($norm(curl_multi_getcontent($c))); curl_multi_remove_handle($mh, $c); }
     ok(count(array_unique($codes)) === 1 && $codes[0] === 200 && count(array_unique($bodies)) === 1, '20 simultaneous requests on a cold cache: all 200, one body');
 
     echo "-- visitors that must never share a page\n";
@@ -120,8 +150,14 @@ try {
 
     echo "-- validators and errors\n";
     req('sample-page'); $x = req('sample-page'); preg_match('/^ETag:\s*(.*)$/mi', $x['head'], $m);
-    $nm = req('sample-page', ['h' => ['If-None-Match: ' . trim($m[1] ?? '')]]);
-    ok($nm['code'] === 304 && $nm['body'] === '', 'If-None-Match gives 304');
+    if (strpos($x['cache'], 'tokens') !== false) {
+        // A page with form tokens has no ETag: a 304 would let the browser reuse a copy with older tokens.
+        $nm = req('sample-page', ['h' => ['If-None-Match: "anything"']]);
+        ok(empty($m[1]) && $nm['code'] === 200 && $nm['body'] !== '', 'a page with tokens has no ETag and is never answered 304');
+    } else {
+        $nm = req('sample-page', ['h' => ['If-None-Match: ' . trim($m[1] ?? '')]]);
+        ok($nm['code'] === 304 && $nm['body'] === '', 'If-None-Match gives 304');
+    }
     $nf = req('qp-no-such-page'); $nf2 = req('qp-no-such-page');
     ok($nf['code'] === 404 && strpos($nf2['cache'], 'HIT') !== 0, '404 pages are never served from cache: ' . $nf2['cache']);
 } finally {

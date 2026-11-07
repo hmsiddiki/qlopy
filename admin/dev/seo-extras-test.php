@@ -65,12 +65,15 @@ try {
     ok(qp_seo_total_pages() === 7, 'a template can state the page count itself');
 
     echo "-- language alternates (separate process)\n";
+    // The fixture addresses were written for the orcasy site; put them on this site's own address and path.
+    $siteFix = function (string $file) use ($site) { file_put_contents($file, str_replace(['https://aloelo.dev/orcasy/', '/orcasy/'], [$site . '/', (string)(parse_url($site, PHP_URL_PATH) ?: '') . '/'], (string)file_get_contents($file))); };
     $tmp = sys_get_temp_dir() . '/qp_seo_hl_test.php';
     file_put_contents($tmp, "<?php\ndefine('QLOPY_INIT', true); define('QP_SEO_FORCE_RENDER', true); chdir(" . var_export(getcwd(), true) . ");\nrequire 'db.php'; require 'auth.php'; require_once 'includes/seo.php';\n\$_GET = ['route' => 'singular', 'post_type' => 'post', 'slug' => " . var_export($slug, true) . "];\n"
         . "\$st = db()->prepare('SELECT * FROM ' . table_name('posts') . ' WHERE slug = ?'); \$st->execute([" . var_export($slug, true) . "]); \$GLOBALS['post'] = \$st->fetch(PDO::FETCH_ASSOC);\n"
         . "add_filter('qp_seo_alternates', function (\$a, \$ctx, \$m) { return [['lang' => 'fr', 'href' => 'https://evil.example/orcasy/fr/post/x'], ['lang' => 'pt-BR', 'href' => 'https://aloelo.dev/orcasy/pt/post/x'], ['lang' => 'x-default', 'href' => 'https://aloelo.dev/orcasy/post/x'], ['lang' => 'not a lang!', 'href' => 'https://aloelo.dev/'], ['lang' => 'de', 'href' => '']]; }, 10, 3);\n"
         . "add_filter('qp_seo_locale', function () { return 'fr_FR'; });\n"
         . "ob_start(); qp_seo_render_alternates(); qp_seo_render_head(); echo ob_get_clean();\n");
+    $siteFix($tmp);
     $out = (string)shell_exec('php ' . escapeshellarg($tmp) . ' 2>&1'); @unlink($tmp);
     preg_match_all('/<link rel="alternate" hreflang="([^"]+)" href="([^"]+)">/', $out, $mm, PREG_SET_ORDER);
     $langs = array_column($mm, 1);
@@ -81,6 +84,7 @@ try {
     file_put_contents($tmp2, "<?php\ndefine('QLOPY_INIT', true); chdir(" . var_export(getcwd(), true) . ");\nrequire 'db.php'; require 'auth.php'; require_once 'includes/seo.php';\n"
         . "add_filter('qp_seo_sitemap_alternates', function (\$a, \$post, \$loc) { return [['lang' => 'fr', 'href' => 'https://evil.example/orcasy/fr' . parse_url(\$loc, PHP_URL_PATH)]]; }, 10, 3);\n"
         . "echo qp_seo_sitemap_file_xml('post', 1);\n");
+    $siteFix($tmp2);
     $sm = (string)shell_exec('php ' . escapeshellarg($tmp2) . ' 2>&1'); @unlink($tmp2); qp_seo_sitemap_purge();
     ok(strpos($sm, '<xhtml:link rel="alternate" hreflang="fr" href="' . $site) !== false && strpos($sm, 'evil.example') === false, 'sitemap entries carry the alternates, on the site address');
 } finally {

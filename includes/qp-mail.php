@@ -786,6 +786,60 @@ function qp_mail_dmarc_record(string $domain, string $rua = '', string $policy =
     return "_dmarc.{$d}    TXT    \"v=DMARC1; p={$policy}; pct={$pct}; {$ruaPart}fo=1\"";
 }
 
+// The caller's From, Reply-To, Cc, Bcc and custom headers on a PHPMailer message (C11 follow-up, 2026-11-07: queued mail ignored them).
+// With $align_from (the queue path), the caller's From *address* is used only when its domain is the configured sender's domain: a
+// From on another domain fails SPF/DMARC alignment at the relay and is refused or junked. Then the configured address stays, the
+// caller's display name is still used, and the caller's address becomes Reply-To (unless one was given), so replies still reach it.
+// Filter `qp_mail_use_caller_from` (bool $use, string $from_address, array $settings): true lets a site whose relay may send for any
+// domain use the caller's address anyway.
+function qp_mail_apply_headers($mail, array $header_map, array $settings = [], bool $align_from = false): void {
+    $reply_set = false;
+    if (!empty($header_map['from'])) {
+        $from = (string)$header_map['from'];
+        if (preg_match('/(.*)<\s*([^>]+)\s*>/', $from, $m)) {
+            $name = trim($m[1], "\"' ");
+            $email_addr = trim($m[2]);
+        } else {
+            $name = '';
+            $email_addr = trim($from);
+        }
+        $use_address = true;
+        if ($align_from) {
+            $configured = qp_mail_default_from($settings);
+            $dom = static fn (string $a): string => strtolower((string)substr((string)strrchr($a, '@'), 1));
+            $use_address = $dom($email_addr) !== '' && $dom($email_addr) === $dom($configured);
+            if (function_exists('apply_filters')) $use_address = (bool)apply_filters('qp_mail_use_caller_from', $use_address, $email_addr, $settings);
+            if (!$use_address) {
+                if ($name !== '') { try { $mail->setFrom($configured, $name); } catch (Throwable $_) { } }
+                if (empty($header_map['reply-to']) && filter_var($email_addr, FILTER_VALIDATE_EMAIL)) {
+                    try { $mail->addReplyTo($email_addr, $name); $reply_set = true; } catch (Throwable $_) { }
+                }
+            }
+        }
+        if ($use_address) {
+            try { $mail->setFrom($email_addr, $name); } catch (Throwable $_) { }
+        }
+    }
+    if (!empty($header_map['reply-to']) && !$reply_set) {
+        try { $mail->addReplyTo(trim($header_map['reply-to'])); } catch (Throwable $_) { }
+    }
+    foreach (['cc' => 'addCC', 'bcc' => 'addBCC'] as $key => $method) {
+        if (empty($header_map[$key])) continue;
+        foreach (explode(',', $header_map[$key]) as $c) { $c = trim($c); if ($c !== '') { try { $mail->$method($c); } catch (Throwable $_) { } } }
+    }
+    if (!empty($header_map['content-type'])) {
+        $ct = strtolower((string)$header_map['content-type']);
+        if (strpos($ct, 'text/plain') !== false) $mail->isHTML(false);
+        elseif (strpos($ct, 'text/html') !== false) $mail->isHTML(true);
+        if (preg_match('/charset=([A-Za-z0-9\-]+)/i', $ct, $m)) $mail->CharSet = $m[1];
+    }
+    $skip = ['mime-version', 'content-type', 'from', 'cc', 'bcc', 'reply-to', 'to', 'subject'];
+    foreach ($header_map as $hn => $hv) {
+        if (in_array($hn, $skip, true)) continue;
+        try { $mail->addCustomHeader(ucwords($hn, '-') . ': ' . $hv); } catch (Throwable $_) { }
+    }
+}
+
 // Send a decoded payload directly (used by queue worker). Payload format: ['to','subject','message','headers','attachments','transport']
 function qp_mail_send_payload(array $payload): bool {
     $settings = qp_mail_get_settings();
@@ -803,6 +857,7 @@ function qp_mail_send_payload(array $payload): bool {
     try {
         $mail = qp_mail_prepare_phpmailer($settings, $transport);
         qp_mail_capture_debug($mail, $debugLines);
+        qp_mail_apply_headers($mail, $header_map, $settings, true); // the caller's From name, Reply-To, Cc, Bcc (queued mail ignored them)
         if (is_array($to)) foreach ($to as $r) $mail->addAddress($r); else $mail->addAddress($to);
         $mail->Subject = $subject;
         $mail->Body = $message;

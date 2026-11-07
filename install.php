@@ -277,6 +277,10 @@ CREATE TABLE IF NOT EXISTS {$prefix}site_options (
                     $capabilities = serialize(['is_super_admin','manage_posts','manage_users','manage_options','manage_themes','manage_plugins','edit_posts','publish_posts','delete_posts','edit_pages','publish_pages','delete_pages','moderate_comments','manage_comments','manage_categories','upload_files','edit_others_posts','edit_others_pages','delete_others_posts','delete_others_pages','manage_menus','manage_widgets','manage_admin_pages']);
                     $stmt->execute([$admin_id, 'capabilities', $capabilities]);
 
+                    // The site email (Settings > General, qp_admin_email()) starts as the installing administrator's email.
+                    $stmt = $pdo->prepare("INSERT INTO " . $prefix . "site_options (option_name, option_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE option_value = VALUES(option_value)");
+                    $stmt->execute(['admin_email', json_encode((string)$admin_email)]);
+
                     // Create default category, sample page and welcome post
                     try {
                         // Default category

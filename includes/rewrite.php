@@ -193,6 +193,8 @@ function permalink_for_page($slug, $extra = []) {
 
 // Helper to build a URL for a post/CPT slug respecting structure
 function permalink_for_post($slug, $post_type = 'post', $extra = []) {
+    // Pages have their own pattern (patterns['page'], /%slug% by default); without this they fell through to /page/%slug%, which 404s.
+    if ($post_type === 'page' && (string)$slug !== '') return permalink_for_page($slug, $extra);
     $structure = permalink_get_structure();
     $base = defined('SITE_URL') ? SITE_URL : '';
     if ($structure === 'pretty') {

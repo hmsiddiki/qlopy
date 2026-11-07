@@ -4,6 +4,10 @@ if (!defined('QLOPY_INIT')) define('QLOPY_INIT', true);
 require_once __DIR__ . '/../auth.php';
 // The sign-in box inside an admin page is a frame of this page; no other site may frame it.
 if (!headers_sent()) { header('X-Frame-Options: SAMEORIGIN'); header("Content-Security-Policy: frame-ancestors 'self'"); }
+// C9: a customer already signed in on the shop (no admin capability) gets the 404, not the admin sign-in form.
+if (is_logged_in() && !qp_admin_access_allowed()) {
+    qp_admin_deny_access();
+}
 
 $error = '';
 
@@ -17,12 +21,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 if (!$user) {
     $error = 'Invalid username or password.';
 } else {
-    $required = ['manage_options','manage_posts','manage_users','manage_themes','manage_plugins','manage_admin_pages','manage_comments','moderate_comments','publish_posts'];
-    $user_caps = $user['capabilities'] ?? [];
-    $allowed = false;
-    foreach ($required as $rc) {
-        if (in_array($rc, $user_caps, true)) { $allowed = true; break; }
-    }
+    // C9: the same check as the gate in admin_head.php (one list, qp_admin_required_caps(), and the qp_admin_access filter)
+    $allowed = qp_admin_access_allowed($user);
     if (!$allowed) {
         $error = 'This account does not have permission to access the admin area.';
     } else {

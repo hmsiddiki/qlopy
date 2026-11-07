@@ -27,29 +27,32 @@ function meta_content($html, $attr, $name) { return preg_match('/<meta[^>]+' . $
 function link_href($html, $rel) { return preg_match('/<link[^>]+rel=["\']' . $rel . '["\'][^>]*href=["\']([^"\']*)/i', $html, $m) ? html_entity_decode($m[1]) : null; }
 $site = rtrim($config['site_url'], '/');
 $o_enabled = get_option_meta('qp_seo_enabled'); $o_settings = get_option_meta('qp_seo_settings');
-$pid = (int)$pdo->query("SELECT id FROM " . table_name('posts') . " WHERE slug = 'sample-widget' AND post_type = 'product'")->fetchColumn();
+// The product to check: the sample product when the site has one (orcasy), else the first published public product.
+$prodSlug = (string)($pdo->query("SELECT slug FROM " . table_name('posts') . " WHERE slug = 'sample-widget' AND post_type = 'product'")->fetchColumn() ?: $pdo->query("SELECT slug FROM " . table_name('posts') . " WHERE post_type = 'product' AND status = 'published' AND visibility = 'public' AND (post_password IS NULL OR post_password = '') ORDER BY id LIMIT 1")->fetchColumn());
+$pid = (int)$pdo->query("SELECT id FROM " . table_name('posts') . " WHERE slug = " . $pdo->quote($prodSlug) . " AND post_type = 'product'")->fetchColumn();
 try {
     update_option_meta('qp_seo_settings', array_merge(qp_seo_defaults(), []));
 
     echo "-- module off: qCommerce prints its own product data as before\n";
     update_option_meta('qp_seo_enabled', false);
-    $off = get('product/sample-widget'); $b = blocks($off['body']);
+    $off = get('product/' . $prodSlug); $b = blocks($off['body']);
     ok(count($b) === 1 && strpos($b[0], '"@type":"Product"') !== false && strpos($b[0], '"@context":"https://schema.org"') !== false, 'one standalone Product block with its own context');
 
     echo "-- module on: the product joins the page's graph\n";
     update_option_meta('qp_seo_enabled', true);
-    $on = get('product/sample-widget'); $b = blocks($on['body']); $j = count($b) === 1 ? json_decode($b[0], true) : null;
+    $on = get('product/' . $prodSlug); $b = blocks($on['body']); $j = count($b) === 1 ? json_decode($b[0], true) : null;
     ok($j !== null && count($b) === 1, 'exactly one JSON-LD block on the product page (no second Product block)');
     $types = $j ? array_column($j['@graph'], '@type') : [];
     ok(in_array('Product', $types, true) && in_array('WebPage', $types, true) && in_array('BreadcrumbList', $types, true), 'graph holds Product with WebPage and BreadcrumbList: ' . implode(',', $types));
     $prod = null; $wp = null; foreach ($j['@graph'] ?? [] as $n) { if ($n['@type'] === 'Product') $prod = $n; if ($n['@type'] === 'WebPage') $wp = $n; }
-    ok($prod && ($prod['name'] ?? '') === 'Sample Widget' && ($prod['sku'] ?? '') === 'SAMPLE-1', 'name and SKU: ' . ($prod['name'] ?? '-') . ' / ' . ($prod['sku'] ?? '-'));
+    $pTitle = (string)$pdo->query("SELECT title FROM " . table_name('posts') . " WHERE id = " . (int)$pid)->fetchColumn(); $pSku = trim((string)(get_post_meta($pid, '_qc_sku') ?? ''));
+    ok($prod && ($prod['name'] ?? '') === $pTitle && (string)($prod['sku'] ?? '') === $pSku, 'name and SKU: ' . ($prod['name'] ?? '-') . ' / ' . ($prod['sku'] ?? '-'));
     ok($prod && ($prod['offers']['@type'] ?? '') === 'Offer' && preg_match('/^\d+(\.\d+)?$/', (string)($prod['offers']['price'] ?? '')) && !empty($prod['offers']['priceCurrency']) && strpos((string)($prod['offers']['availability'] ?? ''), 'schema.org/') !== false, 'offer with price, currency and availability: ' . json_encode($prod['offers'] ?? []));
     ok($prod && ($prod['mainEntityOfPage']['@id'] ?? '') === ($wp['@id'] ?? 'x') && ($wp['about']['@id'] ?? '') === ($prod['@id'] ?? 'y'), 'Product and WebPage point at each other');
     ok($prod && strpos($prod['url'] ?? '', $site) === 0 && strpos($prod['offers']['url'] ?? $site, $site) === 0, 'addresses on the site address: ' . ($prod['url'] ?? '-'));
     ok(strpos($on['body'], '"@context":"https:\/\/schema.org"') === false || substr_count($on['body'], 'schema.org"') >= 1, 'the graph has a single @context');
     $breadcrumb = null; foreach ($j['@graph'] ?? [] as $n) if ($n['@type'] === 'BreadcrumbList') $breadcrumb = $n;
-    ok($breadcrumb && end($breadcrumb['itemListElement'])['name'] === 'Sample Widget', 'breadcrumb ends with the product');
+    ok($breadcrumb && end($breadcrumb['itemListElement'])['name'] === $pTitle, 'breadcrumb ends with the product');
 
     echo "-- private pages and the shop\n";
     $cart = get('cart/'); $robots = meta_content($cart['body'], 'name', 'robots');
@@ -60,7 +63,7 @@ try {
     ok($shop['code'] === 200 && meta_content($shop['body'], 'name', 'robots') === 'index,follow' && link_href($shop['body'], 'canonical') === $site . '/shop', 'shop page: indexable, canonical is the address qCommerce links to: ' . link_href($shop['body'], 'canonical'));
     ok(strpos(meta_content($shop['body'], 'property', 'og:title') ?? '', 'Page not found') === false, 'the shop is not mistaken for a 404');
     $sj = blocks($shop['body']); $sg = count($sj) === 1 ? json_decode($sj[0], true) : null;
-    ok($sg !== null && in_array('WebPage', array_column($sg['@graph'], '@type'), true), 'the shop page has a WebPage graph');
+    ok($sg !== null && array_intersect(['WebPage', 'CollectionPage'], array_column($sg['@graph'], '@type')) !== [], 'the shop page has a WebPage (CollectionPage) graph');
 
     echo "-- robots.txt and sitemap\n";
     $rb = get('robots.txt')['body'];
@@ -68,7 +71,7 @@ try {
     qp_seo_sitemap_purge(); $ix = get('sitemap.xml')['body'];
     ok(strpos($ix, '/sitemap-product-1.xml') !== false, 'products are in the sitemap index');
     $pm = get('sitemap-product-1.xml')['body'];
-    ok(strpos($pm, '/product/sample-widget') !== false, 'the sample product is listed');
+    ok(strpos($pm, '/product/' . $prodSlug) !== false, 'the sample product is listed');
     // visibility: a private product is not listed
     $T = table_name('posts');
     $pdo->prepare("INSERT INTO $T (title,slug,content,post_type,status,visibility,published_at) VALUES ('Private widget','t6-private-widget','x','product','published','private',?)")->execute([gmdate('Y-m-d H:i:s')]);

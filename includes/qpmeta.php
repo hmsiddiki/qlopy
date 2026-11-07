@@ -5,6 +5,7 @@ $GLOBALS['qpmeta_metaboxes'] = [];
 
 // Field type `repeatable_row` (table of typed rows stored as one value); see the file header.
 require_once __DIR__ . '/qpmeta-rows.php';
+require_once __DIR__ . '/qpmeta-io.php';   // export / import for option panels ('io' => true, or a bundle)
 
 if (!function_exists('qp_post_type_singular_label')) {
     /** Singular display name for a post type ('singular_label' arg, else the plural label with its trailing "s" removed). */
@@ -62,6 +63,11 @@ function qpmeta_render_metaboxes($object_type, $object_id = null, $option_prefix
     $site_root = dirname(dirname($_SERVER['SCRIPT_NAME'])); // e.g. /advcms
     if (substr($site_root, -1) !== '/') { $site_root .= '/'; }
     $ajax_url = $site_root . qp_admin_dir() . '/ajax.php?action=qpmeta_save';
+
+    // An option panel registered with 'io' => true gets its Export / Import bar above its forms (includes/qpmeta-io.php).
+    if ($object_type === 'option' && $option_prefix !== null && function_exists('qpmeta_io_prefix_enabled') && qpmeta_io_prefix_enabled((string)$option_prefix)) {
+        qpmeta_io_render_toolbar(['prefix' => (string)$option_prefix]);
+    }
 
     foreach ($GLOBALS['qpmeta_metaboxes'] as $mb_id => $mb) {
         $targets = (array)($mb['object_types'] ?? []);
@@ -502,6 +508,9 @@ function qpmeta_render_field_in_group($field, $object_type, $object_id, $value) 
     if ($type === 'tags') {
         $field['object_id'] = $object_id;
     }
+    // Checkbox, radio and multicheck post one hidden value per row inside a group (see qpmeta_field_control), so the
+    // group's lists stay aligned row by row.
+    $field['__in_group'] = true;
     // Use array name for group fields to store as array
     qpmeta_field_control($type, $id . '[]', $value, $field);
     
@@ -690,10 +699,29 @@ function qpmeta_field_control($type, $name, $value, $field) {
             break;
         case 'checkbox':
             $checked = ($value) ? 'checked' : '';
+            if (!empty($field['__in_group'])) {
+                // In a group the name is field[]: the visible box has no name and one hidden input carries 0 / 1, so every row
+                // posts exactly one value (a hidden 0 plus a ticked 1 would post two and push the next rows down).
+                echo "<span class='qpmeta-cell' data-qpmeta-cell='check'><input type='hidden' name='{$name}' value='" . ($value ? '1' : '0') . "' data-qpmeta-cell-value>";
+                echo "<input type='checkbox' value='1' data-value='1' data-qpmeta-cell-input $checked></span>";
+                break;
+            }
             echo "<input type='hidden' name='{$name}' value='0'>";
             echo "<input type='checkbox' name='{$name}' value='1' $checked>";
             break;
         case 'multicheck':
+            if (!empty($field['__in_group'])) {
+                // In a group: one hidden JSON list per row (field[][] would start a new row for every ticked option).
+                $vals = is_array($value) ? $value : (is_string($value) && $value !== '' ? (json_decode($value, true) ?? [$value]) : []);
+                $vals = array_values(array_map('strval', (array)$vals));
+                echo "<span class='qpmeta-cell' data-qpmeta-cell='multi'><input type='hidden' name='{$name}' value='" . htmlspecialchars(json_encode($vals)) . "' data-qpmeta-cell-value>";
+                foreach (($field['options'] ?? []) as $opt_val => $opt_label) {
+                    $checked = in_array((string)$opt_val, $vals, true) ? 'checked' : '';
+                    echo "<label style='display:inline-block;margin-right:10px;'><input type='checkbox' value='" . htmlspecialchars($opt_val) . "' data-value='" . htmlspecialchars($opt_val) . "' data-qpmeta-cell-input {$checked}> " . htmlspecialchars($opt_label) . "</label>";
+                }
+                echo "</span>";
+                break;
+            }
             // Multiple checkbox group (stores array)
             $options = $field['options'] ?? [];
             $vals = $value;
@@ -718,6 +746,17 @@ function qpmeta_field_control($type, $name, $value, $field) {
             }
             break;
         case 'radio':
+            if (!empty($field['__in_group'])) {
+                // In a group: radios named per row (a shared field[] name made one choice for the whole group), one hidden value posted.
+                $rowName = 'qpmeta_r_' . bin2hex(random_bytes(5));
+                echo "<span class='qpmeta-cell' data-qpmeta-cell='radio'><input type='hidden' name='{$name}' value='" . htmlspecialchars((string)$value) . "' data-qpmeta-cell-value>";
+                foreach (($field['options'] ?? []) as $opt_val => $opt_label) {
+                    $checked = ((string)$value === (string)$opt_val) ? 'checked' : '';
+                    echo "<label><input type='radio' name='{$rowName}' value='" . htmlspecialchars($opt_val) . "' data-value='" . htmlspecialchars($opt_val) . "' data-qpmeta-cell-input $checked> " . htmlspecialchars($opt_label) . "</label> ";
+                }
+                echo "</span>";
+                break;
+            }
             foreach ($field['options'] as $opt_val => $opt_label) {
                 $checked = ($value == $opt_val) ? 'checked' : '';
                 echo "<label><input type='radio' name='{$name}' value='" . htmlspecialchars($opt_val) . "' $checked> " . htmlspecialchars($opt_label) . "</label> ";
@@ -895,6 +934,52 @@ function qpmeta_field_control($type, $name, $value, $field) {
             // JS will handle suggestions, adding/removing chips, and AJAX
             break;
     }
+}
+
+/**
+ * C9: may the signed-in user write (or, with $read, read) the qpmeta fields of this object through the admin AJAX
+ * actions? This check is enforced by the AJAX handlers. qpmeta_save_metaboxes() itself stays callable by code, such as
+ * imports and plugins with their own check.
+ *   option: manage_options, or manage_admin_pages (the cap that opens theme and plugin option pages today)
+ *   post:   manage_posts or edit_others_posts, or edit_posts / edit_own_posts on a post the user wrote
+ *   term:   manage_categories or manage_posts
+ *   user:   the user's own record, or manage_users
+ *   other:  manage_options
+ * Filter `qpmeta_user_can` (bool $can, string $object_type, int $object_id, bool $read) for a plugin with a narrower rule.
+ */
+function qpmeta_user_can(string $object_type, int $object_id, bool $read = false): bool {
+    $has = static fn (string $cap): bool => function_exists('check_permission') && check_permission($cap);
+    $uid = function_exists('qp_current_user_id') ? (int)qp_current_user_id() : 0;
+    $can = false;
+    if ($uid > 0) {
+        switch ($object_type) {
+            case 'option':
+                $can = $has('manage_options') || $has('manage_admin_pages');
+                break;
+            case 'post':
+                if ($has('manage_posts') || $has('edit_others_posts')) { $can = true; break; }
+                if ($has('edit_posts') || $has('edit_own_posts')) {
+                    global $pdo;
+                    try {
+                        $st = $pdo->prepare('SELECT author_id FROM ' . table_name('posts') . ' WHERE id = ? LIMIT 1');
+                        $st->execute([$object_id]);
+                        $can = (int)$st->fetchColumn() === $uid;
+                    } catch (Throwable $_) { $can = false; }
+                }
+                break;
+            case 'term':
+            case 'taxonomy':
+                $can = $has('manage_categories') || $has('manage_posts');
+                break;
+            case 'user':
+                $can = $object_id === $uid || $has('manage_users');
+                break;
+            default:
+                $can = $has('manage_options');
+        }
+    }
+    if (function_exists('apply_filters')) $can = (bool)apply_filters('qpmeta_user_can', $can, $object_type, $object_id, $read);
+    return $can;
 }
 
 /**
@@ -1103,20 +1188,48 @@ function qpmeta_save_metaboxes($object_type, $object_id, $post_data, $files_data
         if (!empty($mb['groups']) && is_array($mb['groups'])) {
             foreach ($mb['groups'] as $group) {
                 $group_fields = $group['fields'] ?? [];
+                // A group is stored as one list per field, read back by position (row 2 of every list is row 2 of the group).
+                // Empty rows are dropped as whole rows: a row goes only when every field in it is empty, and every list drops
+                // the same rows. (Filtering each list on its own moved values up into the wrong rows: a slide with no image
+                // took the next slide's image.)
+                $columns = [];
+                $types = [];
+                $rowCount = 0;
+                foreach ($group_fields as $field) {
+                    $v = $post_data[$field['id']] ?? [];
+                    $col = is_array($v) ? array_values($v) : [];
+                    $types[$field['id']] = $field['type'] ?? '';
+                    // A multicheck posts one JSON list per row (qpmeta_field_control in a group): store it as a list.
+                    if ($types[$field['id']] === 'multicheck') {
+                        $col = array_map(static function ($x) {
+                            if (is_array($x)) return array_values($x);
+                            $d = is_string($x) ? json_decode($x, true) : null;
+                            return is_array($d) ? array_values(array_map('strval', $d)) : [];
+                        }, $col);
+                    }
+                    $columns[$field['id']] = $col;
+                    $rowCount = max($rowCount, count($col));
+                }
+                // An unticked checkbox ("0") or an empty multicheck does not by itself keep a row.
+                $isEmpty = static function ($v, string $type): bool {
+                    if ($type === 'checkbox' && ($v === '0' || $v === 0)) return true;
+                    if (is_array($v)) {
+                        foreach ($v as $s) { if ($s !== '' && $s !== null) return false; }
+                        return true;
+                    }
+                    return $v === '' || $v === null;
+                };
+                $keepRows = [];
+                for ($i = 0; $i < $rowCount; $i++) {
+                    foreach ($columns as $fid => $col) {
+                        if (!$isEmpty($col[$i] ?? '', $types[$fid])) { $keepRows[] = $i; break; }
+                    }
+                }
                 foreach ($group_fields as $field) {
                     $id = $field['id'];
                     $storage_id = $prefix ? ($prefix . '_' . $id) : $id;
-                    $type = $field['type'];
-                    $val = $post_data[$id] ?? [];
-                    // Clean group repeatable arrays before saving
-                    if (!is_array($val)) $val = [];
-                    $val = array_values(array_filter($val, function($v){
-                        if (is_array($v)) {
-                            foreach ($v as $s) { if ($s !== '' && $s !== null) return true; }
-                            return false;
-                        }
-                        return ($v !== '' && $v !== null);
-                    }));
+                    $val = [];
+                    foreach ($keepRows as $i) $val[] = $columns[$id][$i] ?? '';   // a missing cell stays an empty slot
                     // Groups are always array-based (repeatable pattern)
                     qpmeta_update_object_meta($object_type, $object_id, $storage_id, $val);
                 }
@@ -1998,6 +2111,12 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_qpme
         echo json_encode(['status' => 'error', 'message' => 'Missing parameters']);
         exit;
     }
+    // C9: needs the right to this object (qpmeta_user_can)
+    if (!qpmeta_user_can((string)$object_type, $object_id, true)) {
+        http_response_code(403);
+        echo json_encode(['status' => 'error', 'message' => 'No permission']);
+        exit;
+    }
 
     $value = qpmeta_get_object_meta($object_type, $object_id, $field_name, '');
     
@@ -2018,6 +2137,12 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_qpme
 
     if (!$object_type || !$object_id || !$field_name) {
         echo json_encode(['status' => 'error', 'message' => 'Missing parameters']);
+        exit;
+    }
+    // C9: needs the right to this object (qpmeta_user_can)
+    if (!qpmeta_user_can((string)$object_type, $object_id, false)) {
+        http_response_code(403);
+        echo json_encode(['status' => 'error', 'message' => 'No permission']);
         exit;
     }
 
@@ -2273,12 +2398,22 @@ if (!function_exists('qp_get_object_terms')) {
 
 // --- AJAX endpoints ---
 if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_qpmeta_tag_search', function($req) {
+    if (!qpmeta_user_can('term', 0, true)) {
+        http_response_code(403);
+        echo json_encode(['status' => 'error', 'message' => 'No permission']);
+        exit;
+    }
     $taxonomy = $req['taxonomy'] ?? '';
     $q = $req['q'] ?? '';
     echo json_encode(['status' => 'success', 'tags' => qpmeta_search_tags($taxonomy, $q)]);
     exit;
 });
 if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_qpmeta_tag_add', function($req) {
+    if (!qpmeta_user_can('term', 0)) {
+        http_response_code(403);
+        echo json_encode(['status' => 'error', 'message' => 'No permission']);
+        exit;
+    }
     $taxonomy = $req['taxonomy'] ?? '';
     $term = $req['term'] ?? '';
     $id = qpmeta_add_tag($taxonomy, $term);
@@ -2286,6 +2421,11 @@ if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_qpme
     exit;
 });
 if (function_exists('add_admin_action')) add_admin_action('iitcm_admin_ajax_qpmeta_tag_set', function($req) {
+    if (!qpmeta_user_can('post', intval($req['post_id'] ?? 0))) {
+        http_response_code(403);
+        echo json_encode(['status' => 'error', 'message' => 'No permission']);
+        exit;
+    }
     $post_id = intval($req['post_id'] ?? 0);
     $taxonomy = $req['taxonomy'] ?? '';
     $tag_ids = $req['tag_ids'] ?? [];

@@ -88,6 +88,10 @@ $qp_mail_file = __DIR__ . '/includes/qp-mail.php';
 if (is_file($qp_mail_file)) {
     require_once $qp_mail_file;
 }
+// The site email (Settings > General): qp_admin_email(), and its change-by-confirmation-link flow.
+if (is_file(__DIR__ . '/includes/admin-email.php')) {
+    require_once __DIR__ . '/includes/admin-email.php';
+}
 // Helper: return site home URL (similar to WP `home_url()` / `get_home_url()`)
 if (!function_exists('get_home_url')) {
     function get_home_url($path = '', $scheme = null) {
@@ -418,13 +422,13 @@ function qp_nonce_anonymous_binding(int $expires): ?string {
         }
         setcookie($cookie_name, $seed, $expires, $cookie_path, '', $secure, true);
         $_COOKIE[$cookie_name] = $seed;
+        // C14: the page cache may still store this page: this cookie belongs to the visitor, never to the stored copy.
+        $GLOBALS['qp_pc_seed_cookie'] = true;
     }
     return hash_hmac('sha256', 'anonymous|' . $seed, qp_nonce_security_salt());
 }
 
 function qp_nonce_request_context(int $expires): ?array {
-    // Any form token ties the page to one visitor: the page cache must not store it (includes/page-cache.php).
-    if (!empty($GLOBALS['qp_pc_active'])) $GLOBALS['qp_pc_block']['nonce'] = true;
     $cookie = $_COOKIE[QP_SESSION_COOKIE] ?? '';
     $session = $cookie ? validate_session_token($cookie) : null;
     if ($session) {
@@ -448,8 +452,14 @@ if (!function_exists('qp_create_nonce')) {
         $expires = time() + $ttl;
         $context = qp_nonce_request_context($expires);
         if ($context === null) return '';
-        // A page that carries a form token belongs to one visitor: the page cache must not store it (includes/page-cache.php).
-        if (!empty($GLOBALS['qp_pc_active'])) $GLOBALS['qp_pc_block']['nonce'] = true;
+        // A form token belongs to one visitor. While the page cache is building a page (includes/page-cache.php): a visitor's
+        // token is remembered, the stored copy gets a placeholder in its place, and every visitor served from the cache gets a
+        // fresh token of their own (core C14); any other token (a signed-in session) keeps the page out of the cache.
+        $qp_pc_record = false;
+        if (!empty($GLOBALS['qp_pc_active'])) {
+            if ($context['kind'] === 'anonymous') $qp_pc_record = true;
+            else $GLOBALS['qp_pc_block']['nonce'] = true;
+        }
 
         $payload = json_encode([
             'v' => 2,
@@ -466,12 +476,16 @@ if (!function_exists('qp_create_nonce')) {
 
         $encoded_payload = qp_nonce_base64url_encode($payload);
         $signature = hash_hmac('sha256', 'qp_nonce_v2|' . $encoded_payload, qp_nonce_security_salt(), true);
-        return 'qp2.' . $encoded_payload . '.' . qp_nonce_base64url_encode($signature);
+        $token = 'qp2.' . $encoded_payload . '.' . qp_nonce_base64url_encode($signature);
+        if ($qp_pc_record) $GLOBALS['qp_pc_nonces'][$token] = [$action, $ttl];
+        return $token;
     }
 }
 
 if (!function_exists('qp_verify_nonce')) {
     function qp_verify_nonce(string $nonce, string $action = '-1'): bool {
+        // A page whose output depends on a checked form token answers one visitor's request: never stored by the page cache.
+        if (!empty($GLOBALS['qp_pc_active'])) $GLOBALS['qp_pc_block']['nonce'] = true;
         if ($nonce === '' || $action === '' || strlen($nonce) > 8192) return false;
 
         if (strncmp($nonce, 'qp2.', 4) === 0) {
@@ -1256,6 +1270,78 @@ function get_role_list(): array {
         $pretty_roles[$role] = $pretty_name;
     }
     return $pretty_roles;
+}
+
+/**
+ * C9: the capabilities that open the admin area. An account needs at least one. The login form and the gate on every
+ * admin request both use this list, so they cannot drift apart. Filter `qp_admin_required_caps` to add one.
+ */
+function qp_admin_required_caps(): array {
+    $caps = ['manage_options','manage_posts','manage_users','manage_themes','manage_plugins','manage_admin_pages','manage_comments','moderate_comments','publish_posts'];
+    if (function_exists('apply_filters')) {
+        $f = apply_filters('qp_admin_required_caps', $caps);
+        if (is_array($f)) $caps = array_values(array_filter($f, 'is_string'));
+    }
+    return $caps;
+}
+
+/**
+ * C9: may this account (a formatted user from get_user_by(), or the signed-in one) enter the admin area at all?
+ * Role caps and the person's own caps both count. Filter `qp_admin_access` (bool $allowed, array $user) lets a plugin let
+ * one more role in (a shop manager). What each admin screen needs on top is a separate question (C13).
+ */
+function qp_admin_access_allowed($user = null): bool {
+    static $current = null;
+    $isCurrent = $user === null;
+    if ($isCurrent && $current !== null) return $current;
+    if ($isCurrent) {
+        $uid = function_exists('qp_current_user_id') ? (int)qp_current_user_id() : 0;
+        $user = $uid > 0 && function_exists('get_user_by') ? get_user_by('id', $uid) : null;
+    }
+    $allowed = false;
+    if (is_array($user)) {
+        $caps = (array)($user['capabilities'] ?? []);
+        $allowed = array_intersect(qp_admin_required_caps(), $caps) !== [];
+        if (function_exists('apply_filters')) $allowed = (bool)apply_filters('qp_admin_access', $allowed, $user);
+    }
+    if ($isCurrent) $current = $allowed;
+    return $allowed;
+}
+
+/**
+ * C9: answer a signed-in account without admin rights as if there were no admin area: HTTP 404, no admin markup, no
+ * redirect, the session left alone (a customer stays signed in on the shop). Scripts get a JSON 404. One log line.
+ * Action `qp_admin_denied` (bool $is_ajax) lets a theme or plugin print its own 404 page before the default one.
+ */
+function qp_admin_deny_access(): void {
+    $uid = function_exists('qp_current_user_id') ? (int)qp_current_user_id() : 0;
+    $role = $uid > 0 && function_exists('get_user_meta') ? (string)(get_user_meta($uid, 'role') ?: '') : '';
+    error_log('Qlopy admin gate: refused user ' . $uid . ' (role ' . ($role !== '' ? $role : 'none') . ') at ' . substr((string)($_SERVER['REQUEST_URI'] ?? ''), 0, 300));
+    while (ob_get_level()) { ob_end_clean(); }
+    if (!headers_sent()) {
+        http_response_code(404);
+        header('Cache-Control: no-store');
+        header('X-Robots-Tag: noindex');
+    }
+    $isAjax = in_array(basename((string)($_SERVER['SCRIPT_NAME'] ?? '')), ['ajax.php', 'admin-ajax-hook.php'], true)
+        || strcasecmp((string)($_SERVER['HTTP_X_REQUESTED_WITH'] ?? ''), 'XMLHttpRequest') === 0;
+    if ($isAjax) {
+        if (!headers_sent()) header('Content-Type: application/json');
+        echo json_encode(['status' => 'error', 'message' => 'Not found']);
+        exit;
+    }
+    if (function_exists('do_action')) {
+        ob_start();
+        do_action('qp_admin_denied', false);
+        $custom = (string)ob_get_clean();
+        if (trim($custom) !== '') { echo $custom; exit; }
+    }
+    if (!headers_sent()) header('Content-Type: text/html; charset=UTF-8');
+    $home = defined('SITE_URL') ? rtrim((string)SITE_URL, '/') . '/' : '/';
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Page not found</title></head>'
+       . '<body style="font-family:Arial,sans-serif;max-width:520px;margin:15vh auto;padding:0 16px"><h1>Page not found</h1><p>The page you are looking for does not exist.</p>'
+       . '<p><a href="' . htmlspecialchars($home, ENT_QUOTES, 'UTF-8') . '">Go to the home page</a></p></body></html>';
+    exit;
 }
 
 /**

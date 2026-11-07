@@ -13,6 +13,29 @@
             return window.ajaxurl;
         }
 
+        // Checkbox / radio / multicheck inside a group (.qpmeta-cell): the visible controls have no field[] name; one hidden input per
+        // row carries the value ("0"/"1", the chosen option, or a JSON list), so every row posts exactly one entry.
+        function qpmetaCellSync(cell) {
+            var $cell = $(cell), kind = $cell.attr('data-qpmeta-cell'), $out = $cell.find('[data-qpmeta-cell-value]').first();
+            var $on = $cell.find('[data-qpmeta-cell-input]:checked');
+            if (kind === 'check') $out.val($on.length ? '1' : '0');
+            else if (kind === 'radio') $out.val($on.length ? String($on.first().attr('data-value')) : '');
+            else $out.val(JSON.stringify($on.map(function(){ return String($(this).attr('data-value')); }).get()));
+        }
+        $(document).on('change', '.qpmeta-cell [data-qpmeta-cell-input]', function(){ qpmetaCellSync($(this).closest('.qpmeta-cell')); });
+        // A new row is a copy of the prototype: give its radios their own name, untick everything, and start its hidden values empty.
+        $(document).on('qpmeta-field-added', function(e, $row){
+            $($row).find('.qpmeta-cell').each(function(){
+                var $cell = $(this), rowName = 'qpmeta_r_' + Math.random().toString(36).slice(2, 12);
+                $cell.find('[data-qpmeta-cell-input]').each(function(){
+                    this.checked = false;
+                    $(this).val($(this).attr('data-value'));          // the copy blanked every value
+                    if (this.type === 'radio') this.name = rowName;
+                });
+                qpmetaCellSync(this);
+            });
+        });
+
         // Repeatable add
         $(document).on('click', '.qpmeta-repeat-add', function(e) {
             var group = $(this).closest('.qpmeta-repeat-group');

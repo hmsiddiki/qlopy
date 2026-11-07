@@ -122,7 +122,7 @@ ok(array_column($sg['content'], 'type') === ['text/plain'], 'SendGrid: a plain m
 
 // ---- 5. Real sends through PHPMailer (qp_mail direct, and the queue's qp_mail_send_payload) -----------------------
 $tmp = sys_get_temp_dir() . '/qp-c11-' . bin2hex(random_bytes(4));
-$sends = 5;
+$sends = 7;
 $proc = proc_open([PHP_BINARY, __FILE__, '--smtp-server', $tmp, (string)$sends], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
 $port = (int)trim((string)fgets($pipes[1]));
 ok($port > 0, 'fake SMTP server started');
@@ -148,9 +148,11 @@ $sent = [
     qp_mail('a@example.test', $subj . ' plain', "Line one\nLine two", ['Content-Type' => 'text/plain; charset=UTF-8']),
     qp_mail_send_payload(['to' => 'a@example.test', 'subject' => $subj . ' queued', 'message' => $html, 'headers' => ['Content-Type' => 'text/html; charset=UTF-8', 'qp_queue' => true]]),
     qp_mail_send_payload(['to' => 'a@example.test', 'subject' => $subj . ' queued plain', 'message' => "Plain <not a tag>", 'headers' => ['Content-Type' => 'text/plain; charset=UTF-8']]),
+    qp_mail_send_payload(['to' => 'a@example.test', 'subject' => $subj . ' queued same domain', 'message' => $html, 'headers' => ['Content-Type' => 'text/html; charset=UTF-8', 'From' => 'Health n Mart <orders@example.test>', 'Cc' => 'copy@example.test', 'X-Qc-Order' => '42']]),
+    qp_mail_send_payload(['to' => 'a@example.test', 'subject' => $subj . ' queued other domain', 'message' => $html, 'headers' => ['Content-Type' => 'text/html; charset=UTF-8', 'From' => 'Health n Mart <sales@other.test>']]),
 ];
 proc_close($proc);
-ok($sent === [true, true, true, true, true], 'all five messages accepted by the fake server');
+ok($sent === array_fill(0, $sends, true), 'all seven messages accepted by the fake server');
 $msg = function (int $i) use ($tmp) { return is_file("$tmp.$i") ? mime_parse((string)file_get_contents("$tmp.$i")) : [[], []]; };
 
 [$h0, $p0] = $msg(0);
@@ -165,6 +167,13 @@ ok(stripos($h2['content-type'] ?? '', 'text/plain') === 0 && count($p2) === 1 &&
 ok(stripos($h3['content-type'] ?? '', 'multipart/alternative') === 0 && array_column($p3, 0) === ['text/plain', 'text/html'] && trim($p3[0][1] ?? '') === qp_mail_text_version($html), 'queue (qp_mail_send_payload): HTML gets the same text part');
 [$h4, $p4] = $msg(4);
 ok(stripos($h4['content-type'] ?? '', 'text/plain') === 0 && count($p4) === 1 && trim($p4[0][1]) === 'Plain <not a tag>', 'queue: a text/plain message is now sent as plain text (it was sent as HTML before)');
+
+[$h5] = $msg(5);
+ok(stripos($h5['from'] ?? '', 'orders@example.test') !== false && stripos($h5['from'] ?? '', 'Health n Mart') !== false, 'queue: the caller\'s From (same domain as the sender) is used, name and address');
+ok(stripos($h5['cc'] ?? '', 'copy@example.test') !== false && ($h5['x-qc-order'] ?? '') === '42', 'queue: Cc and custom headers are kept');
+[$h6] = $msg(6);
+ok(stripos($h6['from'] ?? '', 'shop@example.test') !== false && stripos($h6['from'] ?? '', 'Health n Mart') !== false, 'queue: a From on another domain keeps the configured address (SPF/DMARC) and uses the caller\'s name');
+ok(stripos($h6['reply-to'] ?? '', 'sales@other.test') !== false, 'queue: the other-domain address becomes Reply-To');
 
 for ($i = 0; $i < $sends; $i++) @unlink("$tmp.$i");
 try {

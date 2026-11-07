@@ -20,6 +20,24 @@ $stmt_pages = $pdo->prepare("SELECT id, title FROM " . table_name('posts') . " W
 $stmt_pages->execute();
 $pages = $stmt_pages->fetchAll(PDO::FETCH_ASSOC);
 
+// Site email (includes/admin-email.php): a change is applied only from the link emailed to the new address.
+$ae_notes = [];
+if (function_exists('qp_admin_email_confirm') && isset($_GET['qp_admin_email_confirm'])) {
+    [$ae_ok, $ae_msg] = qp_admin_email_confirm((string)$_GET['qp_admin_email_confirm']);
+    $ae_notes[] = [$ae_ok ? 'success' : 'warning', $ae_msg];
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && function_exists('qp_admin_email_request') && isset($_POST['admin_email'])) {
+    if (!function_exists('qp_verify_nonce') || !qp_verify_nonce((string)($_POST['qp_admin_email_nonce'] ?? ''), 'qp_admin_email')) {
+        $ae_notes[] = ['warning', 'The site email was not changed: this page had expired. Reload it and try again.'];
+    } elseif (!empty($_POST['qp_admin_email_cancel'])) {
+        qp_admin_email_cancel();
+        $ae_notes[] = ['info', 'The pending site email change was cancelled.'];
+    } elseif (trim((string)$_POST['admin_email']) !== '') {   // empty: no change
+        [$ae_status, $ae_msg] = qp_admin_email_request((string)$_POST['admin_email'], function_exists('qp_current_user_id') ? (int)qp_current_user_id() : 0);
+        if ($ae_msg !== '') $ae_notes[] = [$ae_status === 'sent' ? 'info' : 'warning', $ae_msg];
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $site_name = trim($_POST['site_name'] ?? '');
     $site_tagline = trim($_POST['site_tagline'] ?? '');
@@ -159,6 +177,27 @@ $site_week_start = intval(get_site_option($pdo, 'week_starts_on', 1));
         <label for="site_tagline">Site Tagline</label>
         <input id="site_tagline" name="site_tagline" type="text" class="form-control" value="<?= htmlspecialchars($site_tagline) ?>">
     </div>
+
+<?php if (function_exists('qp_admin_email')):
+    $ae_saved = qp_admin_email_saved();
+    $ae_first = qp_admin_email_first_admin();
+    $ae_pending = qp_admin_email_pending(); ?>
+    <div class="form-group">
+        <label for="admin_email">Site email</label>
+<?php foreach ($ae_notes as [$ae_type, $ae_text]): ?>
+        <div class="alert alert-<?= htmlspecialchars($ae_type) ?> py-2 mb-2"><?= htmlspecialchars($ae_text) ?></div>
+<?php endforeach; ?>
+        <input id="admin_email" name="admin_email" type="email" class="form-control" value="<?= htmlspecialchars($ae_saved) ?>"<?= $ae_saved === '' && $ae_first !== '' ? ' placeholder="' . htmlspecialchars($ae_first) . ' (first administrator, used until one is set)"' : '' ?>>
+        <input type="hidden" name="qp_admin_email_nonce" value="<?= htmlspecialchars(function_exists('qp_create_nonce') ? qp_create_nonce('qp_admin_email') : '') ?>">
+        <small class="form-text text-muted">Where the site sends messages for its owner (the contact form when nothing else is set, new-order alerts when the shop has no recipient of its own). A new address is confirmed by a link emailed to it; the change applies when you open that link.</small>
+<?php if ($ae_pending): ?>
+        <div class="alert alert-info py-2 mt-2 mb-0 d-flex flex-wrap align-items-center" style="gap:10px">
+            <span>Waiting for confirmation: <strong><?= htmlspecialchars($ae_pending['email']) ?></strong> (link sent, valid until <?= htmlspecialchars(date('M j, H:i', (int)$ae_pending['expires'])) ?>).</span>
+            <button type="submit" name="qp_admin_email_cancel" value="1" class="btn btn-sm btn-outline-secondary">Cancel change</button>
+        </div>
+<?php endif; ?>
+    </div>
+<?php endif; ?>
 
     <!-- Permalink Structure removed: managed via dedicated Permalinks settings -->
 

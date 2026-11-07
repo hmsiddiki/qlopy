@@ -326,6 +326,8 @@ function qp_page_cache_store(string $body): void {
         if ($code !== 200) $why[] = 'status:' . $code;
         $ct = ''; $cookie = false;
         foreach (headers_list() as $h) {
+            // The visitor's own nonce seed (set while this page made a form token, C14) goes to this visitor only; it is not stored.
+            if (stripos($h, 'Set-Cookie: qp_csrf_seed=') === 0 && !empty($GLOBALS['qp_pc_seed_cookie'])) continue;
             if (stripos($h, 'Set-Cookie:') === 0) $cookie = true;
             elseif (stripos($h, 'Content-Type:') === 0) $ct = trim(substr($h, 13));
             elseif (stripos($h, 'Location:') === 0) $why[] = 'redirect';
@@ -333,6 +335,14 @@ function qp_page_cache_store(string $body): void {
         if ($cookie) $why[] = 'set-cookie';
         if ($ct !== '' && stripos($ct, 'text/html') !== 0) $why[] = 'type';
         if ($blocker = qp_page_cache_plugins_blocking($state)) $why[] = 'plugin:' . $blocker;
+        // C14: the visitor tokens this page made become placeholders in the stored copy; each visitor served from it gets their own.
+        qp_pc_early_loaded();
+        $tokens = 0;
+        foreach (($GLOBALS['qp_pc_nonces'] ?? []) as $token => [$action, $ttl]) {
+            $n = 0;
+            $body = str_replace((string)$token, qp_pc_nonce_placeholder((string)$action, (int)$ttl), $body, $n);
+            $tokens += $n;
+        }
         // Complete means it ends with the closing tag (a trailing comment is allowed): a page cut short by an error is never stored.
         if ($body === '' || !preg_match('~</html>\s*(<!--.*?-->\s*)*$~is', $body)) $why[] = 'incomplete';
         elseif (strlen($body) > 2 * 1024 * 1024) $why[] = 'too-large';
@@ -350,14 +360,19 @@ function qp_page_cache_store(string $body): void {
         if (!is_dir($d)) @mkdir($d, 0775, true);
         $etag = '"' . md5($body) . '"';
         $tmp = $file . '.' . bin2hex(random_bytes(4)) . '.tmp';
-        $meta = json_encode(['t' => time(), 'status' => 200, 'ct' => $ct !== '' ? $ct : 'text/html; charset=UTF-8', 'etag' => $etag]);
+        $meta = json_encode(['t' => time(), 'status' => 200, 'ct' => $ct !== '' ? $ct : 'text/html; charset=UTF-8', 'etag' => $etag, 'nonces' => $tokens]);
         if (@file_put_contents($tmp, $meta . "\n" . $body, LOCK_EX) !== false) {
             if (!@rename($tmp, $file)) { @unlink($file); @rename($tmp, $file); }
             @unlink($tmp);
             // At most 20 variants of one URL (cookie and host combinations): beyond that the oldest are dropped.
             $files = glob($d . DIRECTORY_SEPARATOR . '*.cache') ?: [];
             if (count($files) > 20) { usort($files, function ($a, $b) { return filemtime($a) <=> filemtime($b); }); foreach (array_slice($files, 0, count($files) - 20) as $old) @unlink($old); }
-            if (!headers_sent()) { header('X-QP-Cache: MISS; stored'); header('ETag: ' . $etag); header('Cache-Control: ' . (string)($state['cache_control'] ?? 'public, max-age=0, must-revalidate')); }
+            if (!headers_sent()) {
+                header('X-QP-Cache: MISS; stored' . ($tokens ? '; tokens' : ''));
+                // This reply holds this visitor's own tokens: private, and no ETag (like a HIT of the same page).
+                if ($tokens) { header('Cache-Control: private, no-cache'); }
+                else { header('ETag: ' . $etag); header('Cache-Control: ' . (string)($state['cache_control'] ?? 'public, max-age=0, must-revalidate')); }
+            }
         }
     } catch (Throwable $e) {
         error_log('qp page cache finish failed: ' . $e->getMessage());

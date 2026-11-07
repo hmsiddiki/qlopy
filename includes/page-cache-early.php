@@ -136,6 +136,48 @@ function qp_pc_next_daily(string $hms): int {
     return $t <= time() ? (int)strtotime('tomorrow ' . $hms) : (int)$t;
 }
 
+// ---- form tokens in cached pages (core C14) ----
+// A visitor's form token (nonce) is bound to that visitor's qp_csrf_seed cookie, so a stored page cannot carry one: it would
+// be the first visitor's, and fail (or worse, be shared) for everyone else. While a page is stored, qp_create_nonce() records
+// every visitor token it made; the stored copy holds a placeholder in its place (action and lifetime, nothing secret), and each
+// visitor served from the cache gets fresh tokens of their own, made here from the site's salt and their own seed cookie.
+// So any form of any theme or plugin keeps its nonce and the page is still cached; no code has to change for it.
+// The tokens made here are exactly qp_create_nonce()'s anonymous v2 tokens (auth.php): admin/dev/page-cache-test.php checks
+// that qp_verify_nonce() accepts them.
+
+/** The placeholder a stored page holds instead of a visitor's token. Only [a-z0-9-]: safe in HTML, attributes, JS and URLs. */
+function qp_pc_nonce_placeholder(string $action, int $ttl): string {
+    return 'qp2-nonce-' . bin2hex($action) . '-' . $ttl . '-end';
+}
+
+/** Fresh tokens for this visitor in place of the placeholders. Sets the visitor's seed cookie when they have none. */
+function qp_pc_fill_nonces(string $body, array $config): string {
+    if (strpos($body, 'qp2-nonce-') === false) return $body;
+    if (!preg_match_all('/qp2-nonce-((?:[0-9a-f]{2}){1,128})-(\d{1,9})-end/', $body, $m)) return $body;
+    $salt = (string)($config['security_salt'] ?? '');
+    $seed = $_COOKIE['qp_csrf_seed'] ?? '';
+    if (!is_string($seed) || preg_match('/^[a-f0-9]{64}$/', $seed) !== 1) {
+        $seed = bin2hex(random_bytes(32));
+        $path = '/'; $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (string)($_SERVER['SERVER_PORT'] ?? '') === '443';
+        $site = parse_url((string)($config['site_url'] ?? ''));
+        if (is_array($site)) {
+            if (!empty($site['path'])) $path = rtrim($site['path'], '/') ?: '/';
+            if (strtolower((string)($site['scheme'] ?? '')) === 'https') $secure = true;
+        }
+        setcookie('qp_csrf_seed', $seed, time() + max(array_map('intval', $m[2])), $path, '', $secure, true);
+        $_COOKIE['qp_csrf_seed'] = $seed;
+    }
+    $binding = hash_hmac('sha256', 'anonymous|' . $seed, $salt);
+    $b64 = function (string $v): string { return rtrim(strtr(base64_encode($v), '+/', '-_'), '='); };
+    $made = [];
+    return (string)preg_replace_callback('/qp2-nonce-((?:[0-9a-f]{2}){1,128})-(\d{1,9})-end/', function ($x) use (&$made, $binding, $salt, $b64) {
+        if (isset($made[$x[0]])) return $made[$x[0]];
+        $payload = json_encode(['v' => 2, 'e' => time() + (int)$x[2], 'a' => (string)hex2bin($x[1]), 'k' => 'anonymous', 'u' => 0, 'b' => $binding]);
+        $enc = $b64((string)$payload);
+        return $made[$x[0]] = 'qp2.' . $enc . '.' . $b64(hash_hmac('sha256', 'qp_nonce_v2|' . $enc, $salt, true));
+    }, $body);
+}
+
 function qp_pc_early_serve(array $config, string $dir): void {
     $state = qp_pc_read_state($dir);
     // A plugin asked for a purge at a fixed time of day (qp_page_cache_purge_daily): prices that change by date, for example.
@@ -159,8 +201,12 @@ function qp_pc_early_serve(array $config, string $dir): void {
     if (!is_array($meta) || empty($meta['t']) || (time() - (int)$meta['t']) > $ttl) { fclose($fh); $GLOBALS['qp_pc_reason'] = null; return; }
     $age = max(0, time() - (int)$meta['t']);
     $etag = (string)($meta['etag'] ?? '');
-    header('X-QP-Cache: HIT; age=' . $age);
-    header('Cache-Control: ' . (string)($state['cache_control'] ?? 'public, max-age=0, must-revalidate'));
+    // A page with form tokens is the same stored copy with this visitor's own tokens filled in (C14): never shared by a proxy,
+    // never answered with 304 (the browser's copy holds older tokens), so no ETag.
+    $dynamic = !empty($meta['nonces']);
+    if ($dynamic) $etag = '';
+    header('X-QP-Cache: HIT; age=' . $age . ($dynamic ? '; tokens' : ''));
+    header('Cache-Control: ' . ($dynamic ? 'private, no-cache' : (string)($state['cache_control'] ?? 'public, max-age=0, must-revalidate')));
     if ($etag !== '') header('ETag: ' . $etag);
     if ($etag !== '' && isset($_SERVER['HTTP_IF_NONE_MATCH']) && trim((string)$_SERVER['HTTP_IF_NONE_MATCH']) === $etag) {
         fclose($fh);
@@ -170,6 +216,7 @@ function qp_pc_early_serve(array $config, string $dir): void {
     header('Content-Type: ' . (string)($meta['ct'] ?? 'text/html; charset=UTF-8'));
     $body = stream_get_contents($fh);
     fclose($fh);
+    if ($dynamic) $body = qp_pc_fill_nonces((string)$body, $config);
     header('Content-Length: ' . strlen($body));
     echo $body;
     exit;

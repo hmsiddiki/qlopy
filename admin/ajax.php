@@ -97,6 +97,21 @@ if (str_starts_with($action, 'qp_media_')) {
     }
 }
 
+// C9: the built-in tag and term handlers below checked nothing (they run before the hook versions in qpmeta.php).
+// Each now needs the right to what it reads or changes; see qpmeta_user_can().
+$c9_rules = [
+    'taxonomy_term_search' => ['term', 0, true],
+    'qpmeta_tag_search' => ['term', 0, true],
+    'qpmeta_tag_add' => ['term', 0, false],
+    'qpmeta_tag_set' => ['post', (int)($_POST['post_id'] ?? 0), false],
+    'qpmeta_tag_get' => ['post', (int)($_POST['post_id'] ?? 0), true],
+];
+if (isset($c9_rules[$action]) && (!function_exists('qpmeta_user_can') || !qpmeta_user_can(...$c9_rules[$action]))) {
+    http_response_code(403);
+    echo json_encode(['status' => 'error', 'message' => 'No permission']);
+    exit;
+}
+
 // Built-in handlers for QPMeta tags field only (taxonomy_term_search, taxonomy_term_add, taxonomy_set_object_terms)
 require_once __DIR__ . '/../db.php';
 
