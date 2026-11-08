@@ -396,13 +396,43 @@ $per_page = isset($_GET['per_page']) ? max(1, min(200, (int)$_GET['per_page'])) 
 $paged = max(1, (int)($_GET['paged'] ?? 1));
 $offset = ($paged - 1) * $per_page;
 
-$count_stmt = $pdo->query("SELECT COUNT(*) FROM " . table_name('users'));
+// Search (?s=): ID, username, email, or the name / nicename / phone kept in user meta. Role filter (?role=): a user with no role
+// stored counts as a subscriber, the same as the Role column shows.
+$search = trim((string)($_GET['s'] ?? ''));
+if (mb_strlen($search) > 100) $search = mb_substr($search, 0, 100);
+$role_filter = trim((string)($_GET['role'] ?? ''));
+$role_list = function_exists('get_role_list') ? get_role_list() : [];
+if ($role_filter !== '' && !isset($role_list[$role_filter])) $role_filter = '';
+
+$users_t = table_name('users');
+$meta_t = table_name('user_meta');
+$where = [];
+$params = [];
+if ($search !== '') {
+    $like = '%' . addcslashes($search, '\\%_') . '%';
+    $or = ['u.username LIKE ?', 'u.email LIKE ?', "EXISTS (SELECT 1 FROM {$meta_t} m WHERE m.user_id = u.id AND m.meta_key IN ('first_name', 'last_name', 'nicename', 'display_name', 'billing_phone') AND m.meta_value LIKE ?)"];
+    array_push($params, $like, $like, $like);
+    if (ctype_digit($search)) { $or[] = 'u.id = ?'; $params[] = (int)$search; }
+    $where[] = '(' . implode(' OR ', $or) . ')';
+}
+if ($role_filter !== '') {
+    $hasRole = "EXISTS (SELECT 1 FROM {$meta_t} r WHERE r.user_id = u.id AND r.meta_key = 'role' AND r.meta_value = ?)";
+    $noRole = "NOT EXISTS (SELECT 1 FROM {$meta_t} r WHERE r.user_id = u.id AND r.meta_key = 'role' AND r.meta_value <> '')";
+    $where[] = $role_filter === 'subscriber' ? "({$hasRole} OR {$noRole})" : $hasRole;
+    $params[] = $role_filter;
+}
+$where_sql = $where ? ' WHERE ' . implode(' AND ', $where) : '';
+
+$count_stmt = $pdo->prepare("SELECT COUNT(*) FROM {$users_t} u{$where_sql}");
+$count_stmt->execute($params);
 $total_count = (int)$count_stmt->fetchColumn();
 $total_pages = max(1, (int)ceil($total_count / $per_page));
 
-$stmt = $pdo->prepare("SELECT id, username, email, created_at FROM " . table_name('users') . " ORDER BY id DESC LIMIT ? OFFSET ?");
-$stmt->bindValue(1, $per_page, PDO::PARAM_INT);
-$stmt->bindValue(2, $offset, PDO::PARAM_INT);
+$stmt = $pdo->prepare("SELECT u.id, u.username, u.email, u.created_at FROM {$users_t} u{$where_sql} ORDER BY u.id DESC LIMIT ? OFFSET ?");
+$i = 1;
+foreach ($params as $p) $stmt->bindValue($i++, $p, is_int($p) ? PDO::PARAM_INT : PDO::PARAM_STR);
+$stmt->bindValue($i++, $per_page, PDO::PARAM_INT);
+$stmt->bindValue($i, $offset, PDO::PARAM_INT);
 $stmt->execute();
 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 $page_title = 'Manage Users';
@@ -413,6 +443,22 @@ require_once __DIR__ . '/inc/header.php';
 <div class="container mt-4">
 <h2>Users</h2>
 <a href="users.php?action=add" class="btn btn-primary mb-3">Add New User</a>
+
+<form method="get" action="users.php" class="form-inline mb-3" role="search">
+    <input type="search" name="s" class="form-control mr-2 mb-2" style="min-width:280px;" placeholder="Name, username, email, phone or ID" value="<?= htmlspecialchars($search, ENT_QUOTES | ENT_SUBSTITUTE) ?>" aria-label="Search users">
+    <select name="role" class="form-control mr-2 mb-2" aria-label="Role">
+        <option value="">All roles</option>
+        <?php foreach ($role_list as $rk => $rl): ?>
+            <option value="<?= htmlspecialchars((string)$rk, ENT_QUOTES | ENT_SUBSTITUTE) ?>" <?= $role_filter === (string)$rk ? 'selected' : '' ?>><?= htmlspecialchars((string)$rl, ENT_QUOTES | ENT_SUBSTITUTE) ?></option>
+        <?php endforeach; ?>
+    </select>
+    <?php if ($per_page !== 20): ?><input type="hidden" name="per_page" value="<?= (int)$per_page ?>"><?php endif; ?>
+    <button type="submit" class="btn btn-outline-primary mr-2 mb-2">Search</button>
+    <?php if ($search !== '' || $role_filter !== ''): ?>
+        <a href="users.php" class="btn btn-link mb-2">Clear</a>
+        <span class="text-muted mb-2"><?= $total_count ?> user<?= $total_count === 1 ? '' : 's' ?> found</span>
+    <?php endif; ?>
+</form>
 
 <table class="table table-bordered table-striped" id="usersTable">
     <thead class="thead-dark">
@@ -455,6 +501,9 @@ require_once __DIR__ . '/inc/header.php';
             </td>
         </tr>
         <?php endforeach; ?>
+        <?php if (!$users): ?>
+        <tr><td colspan="7" class="text-center text-muted"><?= ($search !== '' || $role_filter !== '') ? 'No users match this search.' : 'No users yet.' ?></td></tr>
+        <?php endif; ?>
     </tbody>
 </table>
 

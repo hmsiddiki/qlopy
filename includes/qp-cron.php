@@ -15,18 +15,28 @@ function add_qp_cron_action(string $hook, callable $cb) {
     $map = &qp_cron_hook_registry(); if (!isset($map[$hook])) $map[$hook] = []; $map[$hook][] = $cb; return true;
 }
 
+/**
+ * Runs a task's handlers: those attached with add_action() and those kept in the fallback registry (attached by a file that
+ * loaded before the hooks system, as in `qp-cron.php --core-only`). A task with no handler at all throws, so the queue retries it
+ * and finally marks it failed with the reason, instead of logging it as done when nothing ran.
+ */
 function do_qp_cron_action(string $hook, array $args = []) {
-    if (function_exists('do_action')) {
+    $map = &qp_cron_hook_registry();
+    $hasActions = function_exists('do_action') && !empty($GLOBALS['qlopy_actions'][$hook]);
+    if (!$hasActions && empty($map[$hook])) {
+        throw new RuntimeException('nothing handles this task: the plugin or theme that scheduled it is inactive or was not loaded');
+    }
+    $out = null;
+    if ($hasActions) {
         // do_action() isolates a failing listener (C10); the queue still has to see the failure to retry the task.
         $before = function_exists('qp_hook_error_count') ? qp_hook_error_count() : 0;
         $out = do_action($hook, $args);
         if (function_exists('qp_hook_error_count') && qp_hook_error_count() > $before) {
             throw new RuntimeException((string)($GLOBALS['qp_hook_last_error'] ?? ('a listener of ' . $hook . ' failed')));
         }
-        return $out;
     }
-    $map = &qp_cron_hook_registry(); $results = [];
-    if (empty($map[$hook])) return $results;
+    $results = [];
+    if (empty($map[$hook])) return $out;
     foreach ($map[$hook] as $cb) {
         // Defensive: normalize args so associative arrays become a single argument
         if (is_array($args)) {

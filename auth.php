@@ -4327,6 +4327,10 @@ function qp_handle_upload(array $file, ?int $post_author_id = null, array $optio
         qp_update_attachment_metadata($post_id, $meta);
     }
 
+    // C15a: the attachment and its sizes exist. Fires for every upload path (media screen, REST, imports, local files), unlike
+    // qp_media_uploaded, which only the media screen's AJAX fires. Image optimisers hook here.
+    if (function_exists('do_action')) do_action('qp_attachment_created', $post_id, $meta);
+
     return [true, ['post_id' => $post_id, 'url' => $url, 'path' => $target, 'mime' => $mime]];
 }
 
@@ -4528,13 +4532,23 @@ function qp_generate_image_size(string $sourcePath, string $destPath, int $targe
         imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $width, $height);
     }
 
+    // C15d: the encoder setting for this size (JPEG / WebP / AVIF quality 0-100, PNG compression level 0-9). The defaults are the
+    // values used before the filter existed; an out-of-range answer falls back to them.
+    $defaultQuality = ['image/jpeg' => 85, 'image/png' => 6, 'image/webp' => 85, 'image/avif' => 75][$mime] ?? null;
+    $quality = $defaultQuality;
+    if ($defaultQuality !== null && function_exists('apply_filters')) {
+        $q = apply_filters('qp_image_quality', $defaultQuality, $mime, $destPath);
+        $max = $mime === 'image/png' ? 9 : 100;
+        $quality = is_numeric($q) && (int) $q >= 0 && (int) $q <= $max ? (int) $q : $defaultQuality;
+    }
+
     $ok = false;
     switch ($mime) {
-        case 'image/jpeg': $ok = imagejpeg($dst, $destPath, 85); break;
-        case 'image/png': imagesavealpha($dst, true); $ok = imagepng($dst, $destPath, 6); break;
+        case 'image/jpeg': $ok = imagejpeg($dst, $destPath, $quality); break;
+        case 'image/png': imagesavealpha($dst, true); $ok = imagepng($dst, $destPath, $quality); break;
         case 'image/gif': $ok = imagegif($dst, $destPath); break;
-        case 'image/webp': $ok = function_exists('imagewebp') ? imagewebp($dst, $destPath, 85) : false; break;
-        case 'image/avif': $ok = function_exists('imageavif') ? imageavif($dst, $destPath, 75) : false; break;
+        case 'image/webp': $ok = function_exists('imagewebp') ? imagewebp($dst, $destPath, $quality) : false; break;
+        case 'image/avif': $ok = function_exists('imageavif') ? imageavif($dst, $destPath, $quality) : false; break;
     }
     imagedestroy($src); imagedestroy($dst);
     return $ok;
@@ -4660,6 +4674,7 @@ function qp_get_attachment_image_src(int $post_id, string $size = 'full'): ?arra
             flock($lockFp, LOCK_UN); fclose($lockFp); @unlink($lockPath);
         }
         $GLOBALS['qp_attachment_cache']['image_src'][$cache_key] = $val;
+        if (function_exists('do_action')) do_action('qp_image_size_generated', $post_id, $size, $temp);   // C15b
         return $val;
     }
     $w = (int)$info[0]; $h = (int)$info[1];
@@ -4686,6 +4701,8 @@ function qp_get_attachment_image_src(int $post_id, string $size = 'full'): ?arra
         flock($lockFp, LOCK_UN); fclose($lockFp); @unlink($lockPath);
     }
     $GLOBALS['qp_attachment_cache']['image_src'][$cache_key] = $val;
+    // C15b: a size was just made on demand (not at upload), after the lock is released. Image optimisers hook here.
+    if (function_exists('do_action')) do_action('qp_image_size_generated', $post_id, $size, $final);
     return $val;
 }
 
@@ -4700,7 +4717,37 @@ function qp_get_attachment_image(int $post_id, string $size = 'full', array $att
         $attrs .= ' ' . htmlspecialchars($k, ENT_QUOTES) . '="' . htmlspecialchars($v, ENT_QUOTES) . '"';
     }
     if ($w && $h) { $attrs .= ' width="' . $w . '" height="' . $h . '"'; }
-    return '<img src="' . htmlspecialchars($url, ENT_QUOTES) . '"' . $attrs . ' />';
+    $html = '<img src="' . htmlspecialchars($url, ENT_QUOTES) . '"' . $attrs . ' />';
+    // C15e: lets an image plugin add srcset / sizes or a WebP address. Unchanged when nothing listens.
+    if (function_exists('apply_filters')) $html = (string) apply_filters('qp_attachment_image_html', $html, $post_id, $size, $attr);
+    return $html;
+}
+
+/**
+ * C15c: the finished visitor page, through the `qp_page_html` filter, exactly once per request.
+ *
+ * Called by index.php's shutdown handler (which sends the page) and by the page cache's output callback (which stores it), so
+ * the stored copy and the page sent are the same and a cache hit costs nothing extra. The result is remembered for the same
+ * input, so whichever of the two runs second gets it without running the filter again. Only HTML pages: a response that set
+ * another Content-Type (sitemaps, feeds, JSON, files) is returned unchanged. Without a listener it returns the input.
+ */
+function qp_filter_page_html(string $html, ?array $headers = null): string {
+    static $lastIn = null, $lastOut = null;
+    if ($headers === null && $lastIn !== null && $lastIn === $html) return $lastOut;
+    $out = $html;
+    if ($html !== '' && function_exists('apply_filters') && !empty($GLOBALS['qlopy_filters']['qp_page_html'])) {
+        $isHtml = true;
+        foreach ($headers ?? headers_list() as $h) {   // $headers: tests only (the CLI keeps no header list)
+            if (stripos($h, 'content-type:') === 0) { $isHtml = stripos($h, 'text/html') !== false; }
+        }
+        if ($isHtml) {
+            $filtered = apply_filters('qp_page_html', $html);
+            if (is_string($filtered) && $filtered !== '') $out = $filtered;
+        }
+    }
+    $lastIn = $html;
+    $lastOut = $out;
+    return $out;
 }
 
 // Default sizes (filterable by themes/plugins)
@@ -6352,6 +6399,10 @@ function qp_delete_attachment(int $post_id): bool {
 
     // Load metadata (may be null if already partially removed)
     $meta = function_exists('qp_get_attachment_metadata') ? qp_get_attachment_metadata($post_id) : null;
+
+    // C15f: before any file or record is removed, so a plugin can remove its own files for this attachment (an optimiser's WebP
+    // copies and backups). qp_delete_attachment (below) fires when the metadata is already gone.
+    if (function_exists('do_action')) do_action('qp_before_delete_attachment', $post_id, $meta);
 
     // Delete physical files if metadata present
     // Gather paths from metadata (support 'path', 'path_full', and legacy 'url' entries)

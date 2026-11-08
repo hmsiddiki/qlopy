@@ -262,59 +262,29 @@ if (function_exists('get_option_meta')) {
 }
 if (defined('QP_PROFILE')) qp_profile_mark('plugins_load');
 
-do_action('init'); // Plugins and theme can hook here
-if (defined('QP_PROFILE')) qp_profile_mark('init_action');
-// Now that themes/plugins had a chance to register rewrite rules and
-// query vars, ensure compiled rewrite cache includes rules registered
-// during init when pretty permalinks are enabled. This avoids 404s for
-// archives (e.g. /post/) if the cache was generated earlier without
-// those rules. We perform a cheap check and flush only when necessary.
-if (function_exists('permalink_get_structure') && permalink_get_structure() === 'pretty') {
-    if (function_exists('get_compiled_rewrite_rules') && function_exists('get_rewrite_rules') && function_exists('flush_rewrite_rules')) {
-        try {
-            $compiled = get_compiled_rewrite_rules();
-            $has_post_rules = false;
-            if (is_array($compiled)) {
-                foreach ($compiled as $r) {
-                    if (!empty($r['query']) && strpos($r['query'], 'post_type=post') !== false) { $has_post_rules = true; break; }
-                }
-            }
-            if (!$has_post_rules) {
-                // Rebuild compiled cache from current in-memory rules
-                flush_rewrite_rules(get_rewrite_rules());
-            }
-        } catch (Throwable $_e) {
-            // Fail silently — parsing will fall back to other logic.
-        }
-    }
-}
-
-// Now that themes/plugins had a chance to register rewrite rules and
-// query vars, parse the request to populate `qp_query_vars`.
-parse_request(dirname($_SERVER['SCRIPT_NAME']) ?: '');
-if (defined('QP_PROFILE')) qp_profile_mark('route_parse');
-// Expose a stable hook after the router has populated query vars and globals.
-// Plugins can register frontend enqueues and template decisions on `qp_init`.
-do_action('qp_init');
-if (defined('QP_PROFILE')) qp_profile_mark('qp_init_action');
-// Trigger page-fallback cron after plugins/themes have had a chance to register jobs
-// Built-in scheduler (includes/qp-cron-worker.php): a worker request does one short slice and ends here; a normal page load
-// costs one small file read when nothing is due, and starts the worker only after the page has been sent.
-if (isset($_GET['qp_cron_worker'])) { require_once __DIR__ . '/includes/qp-cron-worker.php'; qp_cron_worker_handle(); }
-// Optional external ping (off until enabled on the Cron screen): runs the same tick as the CLI runner and ends the request.
-if (isset($_GET['qp_cron'])) { require_once __DIR__ . '/includes/qp-cron-worker.php'; qp_cron_ping_handle(); }
-if (function_exists('qp_cron_page_trigger')) qp_cron_page_trigger();
-
-// Start output buffering so we can inject preview topbar when needed
-if (!ob_get_level()) ob_start();
+// The page's own output buffer and shutdown handler, registered before any plugin or theme hook runs (init, qp_init): a plugin
+// that renders a page on one of those hooks and exits (qCommerce's shop, cart and checkout) still goes through the handler, so the
+// page gets qp_page_html (C15c) and, for an admin previewing a theme, the preview bar. A buffer is started unless the top one
+// already holds the whole page: PHP's output_buffering (4096 by default) gives every request an auto-flushing buffer, which
+// sends the page out in pieces, so the handler would only see the last piece. The page cache's buffer (no size limit) is kept.
+$qp_ob_top = ob_get_level() ? ob_get_status() : null;
+if (!$qp_ob_top || (int)($qp_ob_top['chunk_size'] ?? 0) > 0) ob_start();
+unset($qp_ob_top);
 
 // Register shutdown handler to inject preview bar HTML into the final output
 register_shutdown_function(function() use ($active_theme) {
         // Only modify if buffering and previewing session is set
         $buf = '';
         if (ob_get_level()) {
-                $GLOBALS['qp_pc_drain_ok'] = true; // this handler echoes the page unchanged unless an admin is previewing a theme (never cached)
+                $GLOBALS['qp_pc_drain_ok'] = true; // this handler echoes the page (after qp_page_html) unless an admin is previewing a theme (never cached)
                 $buf = ob_get_clean();
+                // C15c: the page through qp_page_html once; with the page cache on, the cache already ran it and stored the same result
+                if (is_string($buf) && function_exists('qp_filter_page_html')) {
+                        try { $buf = qp_filter_page_html($buf); } catch (Throwable $e) { error_log('qp_page_html failed: ' . $e->getMessage()); }
+                }
+                // Without PHP-FPM the cron worker (shutdown function registered after this one) releases the visitor by sending the
+                // page with an exact Content-Length, which needs the page in a buffer: keep it in one. PHP sends it at the end otherwise.
+                if (!function_exists('fastcgi_finish_request')) ob_start();
         }
         // Only admins with manage_themes permission see the preview bar
         if (!is_logged_in() || !function_exists('check_permission') || !check_permission('manage_themes')) {
@@ -358,6 +328,52 @@ register_shutdown_function(function() use ($active_theme) {
         // Fallback: prepend (rare). This keeps behavior predictable if body tag missing.
         echo $bar_html . $content;
 });
+
+do_action('init'); // Plugins and theme can hook here
+if (defined('QP_PROFILE')) qp_profile_mark('init_action');
+// Now that themes/plugins had a chance to register rewrite rules and
+// query vars, ensure compiled rewrite cache includes rules registered
+// during init when pretty permalinks are enabled. This avoids 404s for
+// archives (e.g. /post/) if the cache was generated earlier without
+// those rules. We perform a cheap check and flush only when necessary.
+if (function_exists('permalink_get_structure') && permalink_get_structure() === 'pretty') {
+    if (function_exists('get_compiled_rewrite_rules') && function_exists('get_rewrite_rules') && function_exists('flush_rewrite_rules')) {
+        try {
+            $compiled = get_compiled_rewrite_rules();
+            $has_post_rules = false;
+            if (is_array($compiled)) {
+                foreach ($compiled as $r) {
+                    if (!empty($r['query']) && strpos($r['query'], 'post_type=post') !== false) { $has_post_rules = true; break; }
+                }
+            }
+            if (!$has_post_rules) {
+                // Rebuild compiled cache from current in-memory rules
+                flush_rewrite_rules(get_rewrite_rules());
+            }
+        } catch (Throwable $_e) {
+            // Fail silently — parsing will fall back to other logic.
+        }
+    }
+}
+
+// Now that themes/plugins had a chance to register rewrite rules and
+// query vars, parse the request to populate `qp_query_vars`.
+parse_request(dirname($_SERVER['SCRIPT_NAME']) ?: '');
+if (defined('QP_PROFILE')) qp_profile_mark('route_parse');
+// Expose a stable hook after the router has populated query vars and globals.
+// Plugins can register frontend enqueues and template decisions on `qp_init`.
+do_action('qp_init');
+if (defined('QP_PROFILE')) qp_profile_mark('qp_init_action');
+// Trigger page-fallback cron after plugins/themes have had a chance to register jobs
+// Built-in scheduler (includes/qp-cron-worker.php): a worker request does one short slice and ends here; a normal page load
+// costs one small file read when nothing is due, and starts the worker only after the page has been sent.
+if (isset($_GET['qp_cron_worker'])) { require_once __DIR__ . '/includes/qp-cron-worker.php'; qp_cron_worker_handle(); }
+// Optional external ping (off until enabled on the Cron screen): runs the same tick as the CLI runner and ends the request.
+if (isset($_GET['qp_cron'])) { require_once __DIR__ . '/includes/qp-cron-worker.php'; qp_cron_ping_handle(); }
+// The page-triggered cron starts here, after the page's shutdown handler (registered before `init`): shutdown functions run in
+// the order they were registered, and the cron worker sends the page and closes the connection. Registered before the handler,
+// it sent the page before the handler could run (no qp_page_html, no theme-preview bar) whenever cron work was due.
+if (function_exists('qp_cron_page_trigger')) qp_cron_page_trigger();
 
 // Determine route from normalized/query vars
 if (!isset($_GET['route']) && !empty($segments)) {

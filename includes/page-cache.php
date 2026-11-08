@@ -295,6 +295,11 @@ function qp_page_cache_ob($chunk, $flags) {
         $all .= $chunk;
     }
     if ($flags & PHP_OUTPUT_HANDLER_FINAL) {
+        // C15c: the page index.php drains is the page it sends after qp_page_html; store that same page. (The result is remembered,
+        // so the shutdown handler does not run the filter again.) Any other ending sends the buffer as it is, so it is stored as it is.
+        if (!empty($GLOBALS['qp_pc_drain_ok']) && function_exists('qp_filter_page_html')) {
+            try { $all = qp_filter_page_html($all); } catch (Throwable $e) { error_log('qp_page_html failed: ' . $e->getMessage()); }
+        }
         try { qp_page_cache_store($all); } catch (Throwable $e) { error_log('qp page cache store failed: ' . $e->getMessage()); }
         $all = '';
     }

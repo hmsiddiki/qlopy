@@ -11,6 +11,7 @@
   factory(jQuery);
 }(function($){
   var PLUGINDATA = 'qp_sortable_instance';
+  var instances = 0;   // gives each sortable its own event namespace
 
   // Basic disableSelection fallback
   if (!$.fn.disableSelection) {
@@ -55,7 +56,13 @@
       var usingPointer = false;
       var lastTouchId = null;
 
+      // Native HTML5 dragging is used only without a handle. With a handle the item must not be draggable: a draggable ancestor
+      // turns pressing in a text field and moving the mouse (selecting text, placing the cursor) into dragging the whole item.
+      var nativeDrag = !options.handle;
+      var ns = '.qp_sortable' + (++instances);   // this instance's document listeners, so destroying one leaves the others alone
+
       function refreshItems(){
+        if (!nativeDrag) return;
         $container.find(options.items).each(function(){ this.setAttribute('draggable', 'true'); });
       }
 
@@ -159,6 +166,8 @@
       // Fallback: native HTML5 DnD for desktop mouse (keeps compatibility)
       function onDragStart(e){
         if (usingPointer) return; // pointer-based in progress
+        // Never from a form field or editable text: there the mouse selects text.
+        if ($(e.target).closest('input, textarea, select, [contenteditable], .no-drag').length) { e.preventDefault(); return; }
         draggingEl = this; var $row = $(this); $row.addClass('qp-dragging');
         createAndInsertPlaceholder($row);
         if (typeof options.helper === 'function') {
@@ -184,20 +193,22 @@
       refreshItems();
       // Pointer events
       $container.on('pointerdown', options.items + (options.handle ? ' ' + options.handle : ''), onPointerDown);
-      $(document).on('pointermove.qp_sortable', onPointerMove);
-      $(document).on('pointerup.qp_sortable pointercancel.qp_sortable', onPointerUp);
+      $(document).on('pointermove' + ns, onPointerMove);
+      $(document).on('pointerup' + ns + ' pointercancel' + ns, onPointerUp);
 
-      // Native drag events
-      $container.on('dragstart', options.items, onDragStart);
-      $container.on('dragover', onDragOver);
-      $container.on('drop', onDrop);
-      $container.on('dragend', onDragEnd);
+      // Native drag events (only without a handle, see nativeDrag)
+      if (nativeDrag) {
+        $container.on('dragstart', options.items, onDragStart);
+        $container.on('dragover', onDragOver);
+        $container.on('drop', onDrop);
+        $container.on('dragend', onDragEnd);
+      }
 
       $container.data(PLUGINDATA, {
         refresh: refreshItems,
         destroy: function(){
           $container.off('pointerdown');
-          $(document).off('.qp_sortable');
+          $(document).off(ns);
           $container.off('dragstart dragover drop dragend');
           $container.find(options.items).each(function(){ this.removeAttribute('draggable'); });
           $container.removeData(PLUGINDATA);
@@ -208,6 +219,9 @@
     // init each container; skip containers that don't contain any matching items
     this.each(function(){
       var $c = $(this);
+      // Already sortable (e.g. called again after an item was added): refresh it, don't attach a second set of listeners.
+      var existing = $c.data(PLUGINDATA);
+      if (existing) { existing.refresh(); return; }
       try {
         if ($c.find(options.items).length === 0) return; // nothing to sort here
       } catch(_) {

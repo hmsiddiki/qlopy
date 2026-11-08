@@ -27,7 +27,13 @@ carry any of the work. One line, every minute:
     * * * * * /usr/bin/php /path/to/orcasy/qp-cron.php --key=YOUR_RUNNER_KEY >/dev/null 2>&1
 
 The runner key is on the Cron screen. While the crontab runs, the built-in worker stays quiet by itself (it checks a "last run" stamp
-for 15 minutes), so you do not need to switch it off. Hosts with no crontab can enable "External Ping" on the Cron screen and have a
+for 15 minutes), so you do not need to switch it off.
+
+When something is due, the runner loads the site the way a page does (core, the active theme, the active plugins), so tasks that
+plugins and themes schedule run too; a minute with nothing due loads nothing. If a broken plugin stops it from starting, add
+`--core-only` until the plugin is fixed: core tasks still run, and plugin tasks are retried and then marked failed on the Cron screen.
+
+Hosts with no crontab can enable "External Ping" on the Cron screen and have a
 web-cron service send a POST (not a GET: a GET puts the key in your server logs):
 
     curl -fsS -X POST -d "key=YOUR_RUNNER_KEY" "https://example.com/orcasy/?qp_cron=1"
@@ -78,3 +84,29 @@ Apache (`.htaccess` at the site root, needs mod_headers):
 
 Do not use these lifetimes for files that change under the same name and URL (a logo you replace in place, a user's uploaded file
 with a reused name): give them a new name, or leave them out.
+
+## 6. Compress text files (CSS, JS, SVG, JSON)
+
+Stylesheets and scripts shrink to about a quarter when the server compresses them, so this is usually the biggest single saving on
+a first visit. Many servers have `gzip on;` but compress only HTML, because `gzip_types` is missing: check the response headers of a
+`.css` file for `Content-Encoding: gzip`.
+
+nginx (inside `http { }`, or the site's `server { }`):
+
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_types text/css application/javascript text/javascript application/json image/svg+xml text/plain application/xml;
+    gzip_static on;   # sends file.css.gz as it is when it exists next to file.css (needs ngx_http_gzip_static_module, built in on most packages)
+
+Themes that write a ready-made `.gz` next to their combined files (the qmart theme does, in `uploads/qmart-assets/`) are then sent
+without the server compressing them on each request. With Brotli installed, `brotli on; brotli_types ...` with the same types does
+a little better again.
+
+Apache (`.htaccess` at the site root, needs mod_deflate):
+
+    <IfModule mod_deflate.c>
+        AddOutputFilterByType DEFLATE text/css application/javascript text/javascript application/json image/svg+xml text/plain
+    </IfModule>

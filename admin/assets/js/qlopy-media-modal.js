@@ -382,7 +382,8 @@
                 if (uploadedIds.length) {
                   $.post(adminAjax, { action: 'qp_media_batch_get', ids: uploadedIds.join(',') }, function(resp){
                     if (resp && resp.status === 'success' && Array.isArray(resp.items)) {
-                      resp.items.forEach(function(it){ selectedMeta[String(it.id)] = { url: it.thumb || it.url || '', title: it.title || '' }; });
+                      // the full image, not its thumbnail: this is what gets inserted (the thumbnail is only for the grid)
+                      resp.items.forEach(function(it){ selectedMeta[String(it.id)] = { url: it.url || it.thumb || '', title: it.title || '' }; });
                     }
                     addSelected(uploadedIds);
                     loadLibrary(1, uploadedIds);
@@ -416,7 +417,8 @@
               if (uploadedIds.length) {
                 $.post(adminAjax, { action: 'qp_media_batch_get', ids: uploadedIds.join(',') }, function(resp){
                   if (resp && resp.status === 'success' && Array.isArray(resp.items)) {
-                    resp.items.forEach(function(it){ selectedMeta[String(it.id)] = { url: it.thumb || it.url || '', title: it.title || '' }; });
+                    // the full image, not its thumbnail: this is what gets inserted (the thumbnail is only for the grid)
+                    resp.items.forEach(function(it){ selectedMeta[String(it.id)] = { url: it.url || it.thumb || '', title: it.title || '' }; });
                   }
                   addSelected(uploadedIds);
                   loadLibrary(1, uploadedIds);

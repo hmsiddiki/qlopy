@@ -59,11 +59,12 @@
                     $(this).attr('id', newId);
                 }
             });
-            // Ensure panel body is collapsed for new items
-            clone.find('.qpmeta-panel-body').hide();
-            // Update header title from first text input if present and enforce collapse
-            try { updateRepeatHeaders(group, true); } catch(e) {}
+            // The new item opens, ready to fill in; the others keep the open/closed state the editor left them in.
+            clone.find('.qpmeta-panel-body').first().show();
             $(this).before(clone);
+            // Numbers and titles once the item is in the group, so it gets its own; no collapse.
+            try { updateRepeatHeaders(group, false); } catch(e) {}
+            if (window.qpmetaInitTiny) try { window.qpmetaInitTiny(clone); } catch(e) {}
             // Re-init sortable on this group to include new item
             try { group.sortable({ items: '> .qpmeta-repeat-item:not(.qpmeta-repeatable-prototype)', handle: '.qpmeta-panel-handle', update: function(){ updateRepeatHeaders(group, false); } }); } catch(e) {}
             $(document).trigger('qpmeta-field-added', [clone]);
@@ -74,7 +75,7 @@
         $(document).on('click', '.qpmeta-repeat-remove', function(e) {
             var group = $(this).closest('.qpmeta-repeat-group');
             $(this).closest('.qpmeta-repeat-item').remove();
-            try { updateRepeatHeaders(group, true); } catch(e) {}
+            try { updateRepeatHeaders(group, false); } catch(e) {}   // renumber only; leave open items open
             e.preventDefault();
         });
 
@@ -432,7 +433,7 @@
             }
             val = String(val).replace(/\s+/g, ' ').trim();
             if (val.length > 80) val = val.slice(0, 77) + '\u2026';
-            title += val !== '' ? val : (idx+1);
+            title += val !== '' ? val : 'New item';
             $it.find('.qpmeta-panel-title').first().text(title);
         }
 
