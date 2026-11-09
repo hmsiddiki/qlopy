@@ -17,18 +17,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($username && $password) {
 
-    $user = get_user_by_username($username);
-if (!$user) {
-    $error = 'Invalid username or password.';
-} else {
-    // C9: the same check as the gate in admin_head.php (one list, qp_admin_required_caps(), and the qp_admin_access filter)
-    $allowed = qp_admin_access_allowed($user);
-    if (!$allowed) {
-        $error = 'This account does not have permission to access the admin area.';
-    } else {
-        // proceed to attempt login
-         
-        if (login_user($username, $password, !empty($_POST['remember']) ? qp_auth_ttl(true) : null)) {
+        // C9: the same check as the gate in admin_head.php (one list, qp_admin_required_caps(), and the qp_admin_access filter),
+        // made inside login_user() after the password check, so an account without admin access is answered like a wrong password
+        if (login_user($username, $password, !empty($_POST['remember']) ? qp_auth_ttl(true) : null, static function ($user) { return qp_admin_access_allowed($user); })) {
             // Schedule an immediate update check via qp-cron (best-effort, non-blocking)
             try {
                 // Ensure cron core/queue are available for scheduling when admin_head.php is not included on login page
@@ -76,13 +67,13 @@ if (!$user) {
             header('Location: ' . ($okTarget ? $rt : 'index.php'));
             exit;
         } else {
-            $error = 'Invalid username or password.';
+            // the same answer for an unknown name, a wrong password and an account without admin access; a locked IP or account says how long to wait
+            $error = (function_exists('qp_login_guard_message') ? qp_login_guard_message() : '') ?: 'Invalid username or password.';
+            if (function_exists('qp_login_guard_retry_after') && qp_login_guard_retry_after() > 0 && !headers_sent()) {
+                http_response_code(429);
+                header('Retry-After: ' . qp_login_guard_retry_after());
+            }
         }
-
-
-
-    }
-}
 
         
 

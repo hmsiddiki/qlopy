@@ -117,14 +117,10 @@ function qp_rest_audit(): array { return qp_rest_rejected_ref(); }
 
 // ---------------------------------------------------------------- helpers
 
+/** The visitor's IP (Cloudflare's CF-Connecting-IP when the request comes from Cloudflare): see qp_client_ip() in includes/login-guard.php. */
 function qp_rest_client_ip(): string {
-    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-    $cfg = function_exists('get_config') ? get_config() : [];
-    if (!empty($cfg['trust_proxy']) && !empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
-        $first = trim(explode(',', $_SERVER['HTTP_X_FORWARDED_FOR'])[0]);
-        if (filter_var($first, FILTER_VALIDATE_IP)) $ip = $first;
-    }
-    return (string)$ip;
+    require_once __DIR__ . '/login-guard.php';
+    return qp_client_ip();
 }
 
 function qp_rest_is_loopback(): bool {

@@ -1438,68 +1438,37 @@ function register_user($username, $password, $email, $role = 'subscriber') {
 }
 
 /**
- * Login user using token-based auth (no PHP session writes).
+ * Sign in with a username and password, using token-based auth (no PHP session writes).
+ * The check is guarded (includes/login-guard.php): failed tries are counted per IP and per account and logged, a locked IP or
+ * account is refused before the password is checked (qp_login_guard_message() then says how long to wait), and an unknown
+ * account takes as long as a wrong password. $allow (optional, gets the user) decides whether the account may use this form;
+ * a "no" is answered like a wrong password.
  */
-function login_user($username, $password, $ttl = null) {
-    $user = get_user_by_username($username);
-    if (!$user) return false;
-    // get raw DB row if format_user_row returned WP-like fields
-    $raw = is_array($user['raw'] ?? null) ? $user['raw'] : $user;
-    $stored_hash = $raw['password_hash'] ?? $raw['password'] ?? null;
-    if ($stored_hash && password_verify($password, $stored_hash)) {
-        // Ensure we have a numeric user id
-        $uid = (int)($raw['id'] ?? $user['ID'] ?? 0);
-        if ($uid <= 0) return false;
-        // Create DB-backed token and set token cookie (for cross-server consistency)
-        $tokenRow = null;
-        if (function_exists('create_session_token')) {
-            $tokenRow = $ttl === null ? create_session_token($uid) : create_session_token($uid, (int)$ttl);
-            if (!$tokenRow) return false;   // the login could not be stored
-            if (function_exists('set_session_token_cookie')) {
-                set_session_token_cookie($tokenRow);
-            }
-        }
-        // Return token row when available for callers that want to manage TTL.
-        return $tokenRow ?: true;
-    }
-    return false;
+function login_user($username, $password, $ttl = null, ?callable $allow = null) {
+    require_once __DIR__ . '/includes/login-guard.php';
+    $found = qp_login_check_credentials((string)$username, (string)$password, false, $allow);
+    return $found ? qp_login_start_session($found[1], $ttl) : false;
 }
-function login_user_versatile($username, $password, $ttl = null) {
-    if ($username === '') return false;
-    $user = null;
-    // Try email lookup when input contains '@'
-    if (strpos($username, '@') !== false) {
-        if (function_exists('get_user_by_email')) {
-            $user = get_user_by_email($username);
-        } elseif (function_exists('get_user_by')) {
-            $user = get_user_by('email', $username);
+
+/** As login_user(), but the name may also be the account's email address. */
+function login_user_versatile($username, $password, $ttl = null, ?callable $allow = null) {
+    require_once __DIR__ . '/includes/login-guard.php';
+    $found = qp_login_check_credentials(trim((string)$username), (string)$password, true, $allow);
+    return $found ? qp_login_start_session($found[1], $ttl) : false;
+}
+
+/** Creates the session token and sets its cookie. Returns the token row (or true without token support), false when it could not be stored. */
+function qp_login_start_session(int $uid, $ttl = null) {
+    if ($uid <= 0) return false;
+    $tokenRow = null;
+    if (function_exists('create_session_token')) {
+        $tokenRow = $ttl === null ? create_session_token($uid) : create_session_token($uid, (int)$ttl);
+        if (!$tokenRow) return false;   // the login could not be stored
+        if (function_exists('set_session_token_cookie')) {
+            set_session_token_cookie($tokenRow);
         }
     }
-    // Fallback to username/login lookup
-    if (empty($user)) {
-        if (function_exists('get_user_by_username')) {
-            $user = get_user_by_username($username);
-        } elseif (function_exists('get_user_by')) {
-            $user = get_user_by('login', $username);
-        }
-    }
-    if (!$user) return false;
-    $raw = is_array($user['raw'] ?? null) ? $user['raw'] : $user;
-    $stored_hash = $raw['password_hash'] ?? $raw['password'] ?? null;
-    if ($stored_hash && password_verify($password, $stored_hash)) {
-        $uid = (int)($raw['id'] ?? $user['ID'] ?? 0);
-        if ($uid <= 0) return false;
-        $tokenRow = null;
-        if (function_exists('create_session_token')) {
-            $tokenRow = $ttl === null ? create_session_token($uid) : create_session_token($uid, (int)$ttl);
-            if (!$tokenRow) return false;   // the login could not be stored
-            if (function_exists('set_session_token_cookie')) {
-                set_session_token_cookie($tokenRow);
-            }
-        }
-        return $tokenRow ?: true;
-    }
-    return false;
+    return $tokenRow ?: true;
 }
 
 /**

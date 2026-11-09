@@ -130,7 +130,9 @@ try {
     ok($r['code'] === 200 && ($r['j']['openapi'] ?? '') === '3.0.3' && isset($r['j']['paths']['/qlopy/v1/posts']['get'], $r['j']['paths']['/qlopy/v1/posts/{id}']['patch']) && isset($r['j']['components']['securitySchemes']['bearerAuth']), 'OpenAPI export has paths, methods and security schemes');
     $paths = $r['j']['paths'] ?? [];
     $missing = [];
-    foreach ($paths as $p => $ops) foreach ($ops as $m => $op) if ($p !== '/qlopy/v1/' && strpos($p, 'openapi') === false && $p !== '/qlopy/v1/auth/token' && strpos($p, '/oauth/') === false && empty($op['security']) && !in_array($p . ' ' . $m, ['/qlopy/v1/posts get', '/qlopy/v1/posts/{id} get', '/qlopy/v1/pages get', '/qlopy/v1/pages/{id} get', '/qlopy/v1/terms get', '/qlopy/v1/terms/{id} get'], true)) $missing[] = "$p $m";
+    foreach ($paths as $p => $ops) foreach ($ops as $m => $op) if ($p !== '/qlopy/v1/' && strpos($p, 'openapi') === false && $p !== '/qlopy/v1/auth/token' && strpos($p, '/oauth/') === false && empty($op['security']) && !in_array($p . ' ' . $m, ['/qlopy/v1/posts get', '/qlopy/v1/posts/{id} get', '/qlopy/v1/pages get', '/qlopy/v1/pages/{id} get', '/qlopy/v1/terms get', '/qlopy/v1/terms/{id} get',
+    // qCommerce's storefront catalog: public on purpose (qp_rest_permit_public); visitors get published public products only, checked in qcommerce/tests/RestApiTest.php
+    '/qcommerce/v1/products get', '/qcommerce/v1/products/{id} get', '/qcommerce/v1/products/{id}/variations get'], true)) $missing[] = "$p $m";
     ok(!$missing, 'every non-public route in the export declares security' . ($missing ? ': ' . implode(', ', $missing) : ''));
     $r = api('GET', '/qlopy/v1/posts?per_page=1&fields=id,title');
     ok($r['code'] === 200 && isset($r['h']['x-total'], $r['h']['x-total-pages'], $r['h']['link']) && is_array($r['j']) && array_keys($r['j'][0] ?? []) === ['id', 'title'], 'public list: pagination headers, field selection');

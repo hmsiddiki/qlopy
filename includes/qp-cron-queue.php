@@ -339,6 +339,16 @@ function qp_get_task_origin(int $id): ?string {
     return $v === null ? null : (string)$v;
 }
 
+/**
+ * Next run of a recurring task, counted from when this run started, not when it finished. Counting from the finish made a
+ * 40 s task on a 60 s recurrence miss every other minute-crontab ping (done at :43, due at :43, next ping at :01). A few
+ * seconds of slack keep ping jitter from missing it; a run longer than the recurrence is due again straight away.
+ */
+function qp_cron_next_recurring(int $started, int $rec): int {
+    $slack = min(5, intdiv($rec, 10));
+    return max(time(), $started + $rec - $slack);
+}
+
 function qp_get_task_status(int $id): ?string {
     $pdo = db(); qp_cron_queue_install($pdo);
     $stmt = $pdo->prepare('SELECT status FROM ' . qp_cron_queue_table() . ' WHERE id = ? LIMIT 1');
@@ -385,7 +395,7 @@ function qp_run_task_by_id(int $id, bool $force = false) {
             }
             qp_cron_log($id, $hook, 'success', $msg);
         $rec = (int)($row['recurrence'] ?? 0);
-        if ($rec > 0) { $next = time() + $rec; $stmt = $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET status = ?, attempts = 0, last_error = NULL, next_run = ?, updated_at = ? WHERE id = ?'); $stmt->execute(['pending', $next, time(), $id]); }
+        if ($rec > 0) { $next = qp_cron_next_recurring($now, $rec); $stmt = $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET status = ?, attempts = 0, last_error = NULL, next_run = ?, updated_at = ? WHERE id = ?'); $stmt->execute(['pending', $next, time(), $id]); }
         else { $stmt = $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET status = ?, updated_at = ? WHERE id = ?'); $stmt->execute(['done', time(), $id]); }
         return ['ran'=>[$id=>$out]];
     } catch (Throwable $e) {
@@ -439,7 +449,7 @@ function qp_process_queue(int $limit = 10, bool $light_only = false): array {
                 }
                 qp_cron_log($id, $hook, 'success', $msg);
             $rec = (int)($row['recurrence'] ?? 0);
-            if ($rec > 0) { $next = time() + $rec; $stmt = $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET status = ?, attempts = 0, last_error = NULL, next_run = ?, updated_at = ? WHERE id = ?'); $stmt->execute(['pending', $next, time(), $id]); }
+            if ($rec > 0) { $next = qp_cron_next_recurring((int)$t_start, $rec); $stmt = $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET status = ?, attempts = 0, last_error = NULL, next_run = ?, updated_at = ? WHERE id = ?'); $stmt->execute(['pending', $next, time(), $id]); }
             else { $stmt = $pdo->prepare('UPDATE ' . qp_cron_queue_table() . ' SET status = ?, updated_at = ? WHERE id = ?'); $stmt->execute(['done', time(), $id]); }
             // A task that ran longer than the cap is moved to heavy: it no longer runs from the built-in worker,
             // only from a crontab, the external ping or the Run button (or the Settings option that allows heavy work).

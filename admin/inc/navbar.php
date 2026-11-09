@@ -55,6 +55,20 @@ function is_menu_active($slug) {
     return false;
 }
 
+/**
+ * Is this menu entry the page being shown? By its slug (is_menu_active), or by its link: an entry that links to an admin file
+ * (media.php) is active on that file even when its slug differs, e.g. a plugin's "Media Library" entry under Media. Links with
+ * ?page=... are matched by slug only, as before.
+ */
+function is_menu_item_active($slug, array $menu) {
+    if (is_menu_active($slug)) return true;
+    if (isset($_GET['page'])) return false;
+    $url = (string)($menu['url'] ?? '');
+    if ($url === '' || strpos($url, '?') !== false) return false;
+    $current = basename((string)parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH));
+    return $current !== '' && $current === basename((string)parse_url($url, PHP_URL_PATH));
+}
+
 function is_post_type_active($post_type_key, $current_url) {
     // Check if current URL is for this post type by post_type query param
     if (strpos(strtolower($current_url), 'post_type=' . strtolower($post_type_key)) !== false) {
@@ -83,6 +97,11 @@ global $admin_menus;
 $admin_menus = is_array($admin_menus ?? null) ? $admin_menus : [];
 $post_act = $_GET['action'] ?? 'list';
 $cr_post_type = $_GET['post_type'] ?? '';
+// auth.php turns a legacy ?page=X into front-end router values (post_type=page, slug=X), also in the admin, where page= names a
+// plugin screen: without this every plugin screen highlighted "All Pages". Only a post_type that is really in the address counts.
+if (isset($_GET['page']) && $cr_post_type === 'page' && strpos((string)($_SERVER['QUERY_STRING'] ?? ''), 'post_type=') === false) {
+    $cr_post_type = '';
+}
 $cr_post_act = $cr_post_type.'_'. $post_act;
 $tax_act = $_GET['action'] ?? 'list';
 $cr_tax_type = $_GET['taxonomy'] ?? '';
@@ -292,7 +311,7 @@ function is_external_menu(array $m): bool {
           $children = $menus_by_parent[$slug] ?? [];
           if (!empty($children)):
               $child_active = false;
-              foreach ($children as $cslug => $cmenu) { if (is_menu_active($cslug)) { $child_active = true; break; } }
+              foreach ($children as $cslug => $cmenu) { if (is_menu_item_active($cslug, $cmenu)) { $child_active = true; break; } }
     ?>
         <a href="#submenu-<?=htmlspecialchars($slug)?>" 
            class="nav-link dropdown-toggle <?= $child_active ? 'active' : '' ?>" data-toggle="collapse" aria-expanded="<?= $child_active ? 'true' : 'false' ?>">
@@ -300,7 +319,7 @@ function is_external_menu(array $m): bool {
         </a>
         <div class="collapse submenu <?= $child_active ? 'show' : '' ?>" id="submenu-<?=htmlspecialchars($slug)?>">
           <?php foreach ($children as $cslug => $cmenu): ?>
-            <a href="<?=htmlspecialchars($cmenu['url'])?>" class="nav-link <?=is_menu_active($cslug) ? 'active' : ''?>">
+            <a href="<?=htmlspecialchars($cmenu['url'])?>" class="nav-link <?=is_menu_item_active($cslug, $cmenu) ? 'active' : ''?>">
                 <?=htmlspecialchars($cmenu['title'])?>
             </a>
           <?php endforeach; ?>
