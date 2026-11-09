@@ -120,11 +120,13 @@ function qlopy_backup_skipped(string $rel, array $skip): bool {
 }
 
 /**
- * Update backup: copy into $dir/files/ only the files of $target that the package in $source will overwrite, and record the files
- * it will add (they do not exist yet). Uses the same skip list as the update itself. Returns [copied, added].
+ * Update backup: copy into $dir/files/ only the files of $target that the package in $source will change, and record the files it
+ * will add (they do not exist yet). A file the package holds in exactly the same form (same size and content) is left out: the
+ * update does not change it, so a restore does not need it. Uses the same skip list as the update itself.
+ * Returns [copied, added, unchanged].
  */
 function qlopy_backup_copy_changed(string $source, string $target, array $skip, string $dir): array {
-    $copied = 0; $added = [];
+    $copied = 0; $added = []; $unchanged = 0;
     $slen = strlen(rtrim($source, '/\\')) + 1;
     $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($source, RecursiveDirectoryIterator::SKIP_DOTS));
     foreach ($it as $f) {
@@ -132,6 +134,10 @@ function qlopy_backup_copy_changed(string $source, string $target, array $skip, 
         $rel = ltrim(str_replace('\\', '/', substr($f->getPathname(), $slen)), '/');
         if ($rel === '' || qlopy_backup_skipped($rel, $skip)) continue;
         $old = rtrim($target, '/\\') . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
+        if (is_file($old) && (int)@filesize($old) === (int)$f->getSize() && @hash_file('sha1', $old) === @hash_file('sha1', $f->getPathname())) {
+            $unchanged++;   // the update writes the same bytes: nothing to keep
+            continue;
+        }
         if (is_file($old)) {
             $dest = $dir . DIRECTORY_SEPARATOR . 'files' . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $rel);
             if (!is_dir(dirname($dest))) @mkdir(dirname($dest), 0755, true);
@@ -140,7 +146,7 @@ function qlopy_backup_copy_changed(string $source, string $target, array $skip, 
             $added[] = $rel;
         }
     }
-    return [$copied, $added];
+    return [$copied, $added, $unchanged];
 }
 
 /**
@@ -303,9 +309,27 @@ function qlopy_backup_restore(string $dir, bool $withDb = false): array {
         $res = qlopy_db_restore_file($db);
         if (isset($res['error'])) return ['error' => 'db_restore_failed', 'details' => $res] + $out;
         $out['db'] = true;
+        $out['tasks_closed'] = qlopy_backup_close_restored_tasks();
     }
     if (function_exists('qlopy_audit_log')) qlopy_audit_log('backup_restored', ['backup' => basename($dir), 'with_db' => $withDb] + $out);
     return $out;
+}
+
+/**
+ * After a database restore: cron tasks the restored tables say are "running" cannot be running (the dump was made while they ran;
+ * an update backup is made by the running update task itself). Left so, they block the queue: the next "Update Now" was not
+ * scheduled until they timed out. They are marked failed with a note, not pending: an update put back to pending would run again
+ * at once and undo the restore the owner just chose. Returns how many were closed.
+ */
+function qlopy_backup_close_restored_tasks(): int {
+    if (!function_exists('db') || !function_exists('table_name')) return 0;
+    try {
+        $st = db()->prepare('UPDATE `' . table_name('cron_queue') . '` SET status = ?, last_error = ?, updated_at = ? WHERE status = ?');
+        $st->execute(['failed', 'Stopped: the database was restored from a backup made while this task ran.', time(), 'running']);
+        return $st->rowCount();
+    } catch (Throwable $_) {
+        return 0;   // no queue table on this site
+    }
 }
 
 /** Give the folders from before C17 random names, once (their date is kept in front). */

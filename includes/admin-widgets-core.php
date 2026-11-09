@@ -13,6 +13,29 @@ function qp_dash_count_dirs(string $dir): int {
     return $n;
 }
 
+// Updates waiting for this site (core, plugins, themes): only registered while there is at least one, so the Dashboard shows nothing
+// otherwise. Read from the stored list (no network); an item already installed is not counted (qlopy_pending_updates()).
+$qp_dash_updates = function_exists('qlopy_pending_updates') ? qlopy_pending_updates() : ['total' => 0];
+if ($qp_dash_updates['total'] > 0) {
+    register_admin_widget('updates_available', [
+        'title' => 'Updates available', 'column' => 1, 'priority' => 'high', 'order' => 0, 'removable' => false,
+        'capability' => 'manage_options',
+        'callback' => function (array $s) use ($qp_dash_updates) {
+            $labels = ['core' => 'Core', 'plugin' => 'Plugin', 'theme' => 'Theme'];
+            echo '<table class="table table-sm mb-2"><thead><tr><th>Item</th><th>Installed</th><th>New</th></tr></thead><tbody>';
+            foreach ($qp_dash_updates['items'] as $it) {
+                echo '<tr><td>' . qp_dash_h($labels[$it['type']] ?? $it['type']) . ': <strong>' . qp_dash_h($it['name']) . '</strong></td>'
+                    . '<td>' . qp_dash_h($it['current'] !== '' ? $it['current'] : '?') . '</td>'
+                    . '<td><span class="badge badge-success">' . qp_dash_h($it['new']) . '</span></td></tr>';
+            }
+            echo '</tbody></table>';
+            echo '<a class="btn btn-sm btn-primary" style="color:#fff" href="updates.php">Go to Updates</a>';   // the dashboard's link colour would win over the button's
+            echo ' <span class="small text-muted ml-2">An automatic backup is made before each update.</span>';
+        },
+    ]);
+}
+unset($qp_dash_updates);
+
 register_admin_widget('at_a_glance', [
     'title' => 'At a glance', 'column' => 1, 'priority' => 'high', 'order' => 1, 'removable' => false,
     'callback' => function (array $s) {

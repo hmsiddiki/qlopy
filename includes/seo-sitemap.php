@@ -208,12 +208,15 @@ function qp_seo_sitemap_file_xml(string $key, int $page): ?string {
 function qp_seo_robots_txt(): string {
     $s = qp_seo_settings();
     $site = parse_url(qp_seo_site_url(), PHP_URL_PATH); $site = rtrim((string)$site, '/');
-    $admin = '/' . trim((string)(function_exists('get_config') ? (get_config()['admin_dir'] ?? 'admin') : 'admin'), '/');
+    $adminDir = trim((string)(function_exists('get_config') ? (get_config()['admin_dir'] ?? 'admin') : 'admin'), '/');
     $lines = ['User-agent: *'];
     if (!empty($s['robots_block_all'])) {
         $lines[] = 'Disallow: /';
     } else {
-        $dis = [$admin . '/', '/ajax.php', '/install.php', '/qp-cron.php', '/?qp_cron'];
+        // robots.txt is public: a renamed admin folder (config admin_dir) is never named here, or the file would tell everyone where it
+        // is. Admin pages say noindex with a header instead (admin/admin_head.php, admin/login.php). The default "admin" is public
+        // knowledge anyway, so it stays listed.
+        $dis = array_merge($adminDir === 'admin' ? ['/admin/'] : [], ['/ajax.php', '/install.php', '/qp-cron.php', '/?qp_cron']);
         if (!empty($s['noindex_search']) && function_exists('permalink_get_patterns')) { $sp = (string)(permalink_get_patterns()['search'] ?? ''); $sp = trim(explode('%q%', $sp)[0], '/'); if ($sp !== '') $dis[] = '/' . $sp . '/'; }
         if (function_exists('apply_filters')) { $f = apply_filters('qp_seo_robots_disallow', $dis); if (is_array($f)) $dis = $f; }
         foreach (array_unique($dis) as $d) $lines[] = 'Disallow: ' . $site . '/' . ltrim((string)$d, '/');

@@ -30,6 +30,9 @@ if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_NONE) {
 }
 // Mark admin context so cron scheduling and other admin-only helpers permit actions
 if (!defined('IN_ADMIN')) define('IN_ADMIN', true);
+// Search engines never index admin pages. Said with a header on every admin response, not in robots.txt, which anyone can read:
+// a robots.txt line would name a renamed admin folder (config admin_dir) to the world.
+if (!headers_sent()) header('X-Robots-Tag: noindex, nofollow');
 // Page cache safety net: any admin request that changes something (a POST: saving a post, a setting, a plugin's screen) purges the
 // cache when the request ends, whatever it touched. Only while the cache is on.
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && function_exists('qp_page_cache_purge_all')) {

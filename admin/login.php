@@ -3,7 +3,7 @@
 if (!defined('QLOPY_INIT')) define('QLOPY_INIT', true);
 require_once __DIR__ . '/../auth.php';
 // The sign-in box inside an admin page is a frame of this page; no other site may frame it.
-if (!headers_sent()) { header('X-Frame-Options: SAMEORIGIN'); header("Content-Security-Policy: frame-ancestors 'self'"); }
+if (!headers_sent()) { header('X-Frame-Options: SAMEORIGIN'); header("Content-Security-Policy: frame-ancestors 'self'"); header('X-Robots-Tag: noindex, nofollow'); }   // noindex: never in search results (and not named in robots.txt)
 // C9: a customer already signed in on the shop (no admin capability) gets the 404, not the admin sign-in form.
 if (is_logged_in() && !qp_admin_access_allowed()) {
     qp_admin_deny_access();

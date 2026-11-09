@@ -147,8 +147,20 @@ $admin_url = rtrim(qp_admin_url(), '/');
  <div id="admin-wrapper">
 <div id="sidebar" class="pt-5 main_navs_color">
   <nav class="nav flex-column pt-2">
+    <?php
+    // Update bubbles (like WordPress): updates waiting for this site, from the stored list only (no network), for users who may
+    // install them. Dashboard and Settings > Updates show all; Plugins the plugin updates; Appearance > Themes the theme updates.
+    $qp_upd = (function_exists('qlopy_pending_updates') && function_exists('current_user_can') && current_user_can('manage_options'))
+        ? qlopy_pending_updates() : ['total' => 0, 'core' => 0, 'plugin' => 0, 'theme' => 0];
+    $qp_bubble = function (string $slug) use ($qp_upd): string {
+        if (!function_exists('qlopy_update_bubble')) return '';
+        $n = ['dashboard' => $qp_upd['total'], 'settings' => $qp_upd['total'], 'updates' => $qp_upd['total'], 'plugins' => $qp_upd['plugin'],
+            'appearance' => $qp_upd['theme'], 'themes' => $qp_upd['theme']][$slug] ?? 0;
+        return qlopy_update_bubble((int)$n);
+    };
+    ?>
     <a href="index.php?page=dashboard" class=" nav-link <?=is_menu_active('dashboard') ? 'active' : ''?>">
-        <i class="qp-gauge-1"></i> <div class="parent_menu_title">Dashboard</div>
+        <i class="qp-gauge-1"></i> <div class="parent_menu_title">Dashboard<?= $qp_bubble('dashboard') ?></div>
     </a>
     <?php foreach ($post_types as $pt_key => $pt_args):
       // Skip post types that should not appear in admin menu
@@ -315,18 +327,18 @@ function is_external_menu(array $m): bool {
     ?>
         <a href="#submenu-<?=htmlspecialchars($slug)?>" 
            class="nav-link dropdown-toggle <?= $child_active ? 'active' : '' ?>" data-toggle="collapse" aria-expanded="<?= $child_active ? 'true' : 'false' ?>">
-           <?= render_nav_icon($menu_def['icon'] ?? null, 'fas fa-cog') ?> <div class="parent_menu_title"><?=htmlspecialchars($menu_def['title'])?></div>
+           <?= render_nav_icon($menu_def['icon'] ?? null, 'fas fa-cog') ?> <div class="parent_menu_title"><?=htmlspecialchars($menu_def['title'])?><?= $qp_bubble((string)$slug) ?></div>
         </a>
         <div class="collapse submenu <?= $child_active ? 'show' : '' ?>" id="submenu-<?=htmlspecialchars($slug)?>">
           <?php foreach ($children as $cslug => $cmenu): ?>
             <a href="<?=htmlspecialchars($cmenu['url'])?>" class="nav-link <?=is_menu_item_active($cslug, $cmenu) ? 'active' : ''?>">
-                <?=htmlspecialchars($cmenu['title'])?>
+                <?=htmlspecialchars($cmenu['title'])?><?= $qp_bubble((string)$cslug) ?>
             </a>
           <?php endforeach; ?>
         </div>
       <?php else: ?>
         <a href="<?=htmlspecialchars($menu_def['url'])?>" class="nav-link <?=is_menu_active($slug) ? 'active' : ''?>">
-        <?= render_nav_icon($menu_def['icon'] ?? null, 'qp-cog-alt') ?> <div class="parent_menu_title"><?=htmlspecialchars($menu_def['title'])?></div>
+        <?= render_nav_icon($menu_def['icon'] ?? null, 'qp-cog-alt') ?> <div class="parent_menu_title"><?=htmlspecialchars($menu_def['title'])?><?= $qp_bubble((string)$slug) ?></div>
       </a>
       <?php endif; endforeach; ?>
   </nav>

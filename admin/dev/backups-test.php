@@ -37,11 +37,15 @@ try {
     $target = $scratch . DIRECTORY_SEPARATOR . 'site';
     $pkg = $scratch . DIRECTORY_SEPARATOR . 'pkg';
     put("$target/a.php", 'old a'); put("$target/lib/b.php", 'old b'); put("$target/untouched.zip", str_repeat('z', 5000)); put("$target/config.php", 'old config');
+    put("$target/lib/same.php", 'same bytes'); put("$target/lib/samesize.php", 'AAAA');
     put("$pkg/a.php", 'new a'); put("$pkg/lib/b.php", 'new b'); put("$pkg/lib/c.php", 'new c'); put("$pkg/config.php", 'new config');
+    put("$pkg/lib/same.php", 'same bytes'); put("$pkg/lib/samesize.php", 'BBBB');   // identical file; same size but other content
     $dir = qlopy_backup_new('update', ['type' => 'core', 'target' => $target, 'status' => 'running']); $made[] = basename($dir);
-    [$copied, $added] = qlopy_backup_copy_changed($pkg, $target, ['config.php'], $dir);
+    [$copied, $added, $unchanged] = qlopy_backup_copy_changed($pkg, $target, ['config.php'], $dir);
     $m = qlopy_backup_meta($dir); $m['status'] = 'done'; $m['added'] = $added; $m['files'] = $copied; qlopy_backup_save_meta($dir, $m);
-    ok($copied === 2, 'two existing files copied (got ' . $copied . ')');
+    ok($copied === 3, 'three changed files copied (got ' . $copied . ')');
+    ok($unchanged === 1 && !is_file("$dir/files/lib/same.php"), 'a file the package holds unchanged is left out (unchanged: ' . $unchanged . ')');
+    ok(is_file("$dir/files/lib/samesize.php"), 'a file of the same size but other content is kept');
     ok($added === ['lib/c.php'], 'the added file is recorded (' . json_encode($added) . ')');
     ok(is_file("$dir/files/a.php") && is_file("$dir/files/lib/b.php"), 'copies keep their paths under files/');
     ok(!is_file("$dir/files/untouched.zip") && !is_file("$dir/files/config.php"), 'files the update does not touch, and skipped ones, are not copied');
@@ -54,7 +58,7 @@ try {
     qlopy_recursive_apply($pkg, $target, ['config.php']);   // the update itself
     ok(file_get_contents("$target/a.php") === 'new a' && is_file("$target/lib/c.php"), 'update applied to the scratch site');
     $r = qlopy_backup_restore($dir, false);
-    ok(!empty($r['success']) && $r['files'] === 2 && $r['removed'] === 1, 'restore reports 2 files and 1 removed (' . json_encode($r) . ')');
+    ok(!empty($r['success']) && $r['files'] === 3 && $r['removed'] === 1, 'restore reports 3 files and 1 removed (' . json_encode($r) . ')');
     ok(file_get_contents("$target/a.php") === 'old a' && file_get_contents("$target/lib/b.php") === 'old b', 'old files are back in their folders');
     ok(!is_file("$target/lib/c.php"), 'the file the update added is gone');
     ok(!is_file("$target/b.php") && !is_file($root . '/b.php'), 'nothing was restored into the wrong folder');
@@ -155,6 +159,11 @@ try {
     ok(!$exists($q, $ids[2]) && $exists($q, $ids[3]), 'cron: failed 40 days ago removed, failed 10 days ago kept');
     ok($exists($q, $ids[4]) && $exists($q, $ids[5]), 'cron: pending and repeating tasks never removed, however old');
     ok(!$exists($cl, $oldCl), 'cron log: 60-day-old line removed');
+    // after a database restore, a task the restored tables call "running" is not running: it is closed as failed, never re-run
+    $ins->execute(['running', 0, time(), time()]); $runId = (int)$pdo->lastInsertId();
+    $closed = qlopy_backup_close_restored_tasks();
+    $row = $pdo->query("SELECT status, last_error FROM `$q` WHERE id = $runId")->fetch(PDO::FETCH_ASSOC);
+    ok($closed >= 1 && ($row['status'] ?? '') === 'failed' && strpos((string)($row['last_error'] ?? ''), 'restored from a backup') !== false, 'a "running" task left by a database restore is closed as failed (' . json_encode($row) . ')');
     ok(empty($hr['errors']), 'cleanup reported no problems' . ($hr['errors'] ? ': ' . implode('; ', $hr['errors']) : ''));
     $usage = qp_housekeeping_usage();
     ok(isset($usage['mail_log'], $usage['cron_queue'], $usage['backups_auto'], $usage['backups_manual']), 'usage lists mail, cron and both backup groups');

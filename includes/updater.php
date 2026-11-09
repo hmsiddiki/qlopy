@@ -684,6 +684,52 @@ function qlopy_reschedule_scheduler_tasks()
     return true;
 }
 
+/**
+ * The updates waiting for this site, as the admin shows them (menu bubbles, the Dashboard widget). Only items whose stored new
+ * version is newer than the version installed now (the update checks registered by central_init_update(): core from QLOPY_VERSION,
+ * each plugin and theme from its header) count, so an entry left behind by an update made in the meantime is never shown.
+ * Reads the stored list only (no network). Cached per request.
+ *
+ * @return array{total: int, core: int, plugin: int, theme: int, items: array<int, array{type: string, folder: string, name: string, current: string, new: string}>}
+ */
+function qlopy_pending_updates(bool $fresh = false): array
+{
+    static $out = null;
+    if ($out !== null && !$fresh) return $out;
+    $out = ['total' => 0, 'core' => 0, 'plugin' => 0, 'theme' => 0, 'items' => []];
+    try {
+        if ((empty($GLOBALS['qlopy_update_checks']) || !is_array($GLOBALS['qlopy_update_checks'])) && function_exists('central_init_update')) central_init_update();
+        $installed = [];
+        foreach ((array)($GLOBALS['qlopy_update_checks'] ?? []) as $c) {
+            $installed[($c['type'] ?? '') . '::' . (string)($c['folder'] ?? '')] = (string)($c['current_version'] ?? '');
+        }
+        foreach (qlopy_get_available_updates() as $u) {
+            $type = (string)($u['type'] ?? '');
+            if (!in_array($type, ['core', 'plugin', 'theme'], true)) continue;
+            $folder = (string)($u['folder'] ?? '');
+            $new = (string)($u['new_version'] ?? ($u['manifest']['version'] ?? ''));
+            $key = $type . '::' . $folder;
+            if ($type !== 'core' && !array_key_exists($key, $installed)) continue;   // a plugin or theme no longer on the site (deleted since the check)
+            $current = $installed[$key] ?? (defined('QLOPY_VERSION') ? (string)QLOPY_VERSION : '');
+            if ($new === '' || ($current !== '' && qlopy_version_compare($current, $new) >= 0)) continue;   // already installed
+            $name = (string)($u['manifest']['name'] ?? ($type === 'core' ? 'Qlopy core' : ($folder !== '' ? $folder : $type)));
+            $out['items'][] = ['type' => $type, 'folder' => $folder, 'name' => $name, 'current' => $current, 'new' => $new];
+            $out[$type]++;
+            $out['total']++;
+        }
+    } catch (Throwable $_) {
+        // the admin menu must never fail because of this
+    }
+    return $out;
+}
+
+/** A small count bubble for an admin menu entry ('' when there is nothing to show). */
+function qlopy_update_bubble(int $n, string $title = ''): string
+{
+    if ($n <= 0) return '';
+    return ' <span class="badge badge-pill badge-danger qp-update-bubble" title="' . htmlspecialchars($title !== '' ? $title : $n . ' update' . ($n === 1 ? '' : 's') . ' available', ENT_QUOTES, 'UTF-8') . '">' . $n . '</span>';
+}
+
 // Compare simple dotted versions (works for 1.2.3 style)
 function qlopy_version_compare($a, $b)
 {
@@ -1092,12 +1138,12 @@ function qlopy_do_update_action_inner($args = [])
             'status' => 'running',
         ]);
         if ($backupDir !== null) {
-            [$copied, $added] = qlopy_backup_copy_changed($source, $target, $skip, $backupDir);
+            [$copied, $added, $unchanged] = qlopy_backup_copy_changed($source, $target, $skip, $backupDir);
             $withDb = !empty($manifest['db_migrate']) || ($settingsNow['db_backup_on_update'] ?? true);
             $hasDb = $withDb ? qlopy_db_dump($backupDir . DIRECTORY_SEPARATOR . 'db-backup.sql.gz') : false;
             if ($withDb && !$hasDb) qlopy_updater_log('DB backup failed or unavailable');
             $meta = qlopy_backup_meta($backupDir);
-            $meta['status'] = 'done'; $meta['files'] = $copied; $meta['added'] = $added; $meta['has_db'] = $hasDb;
+            $meta['status'] = 'done'; $meta['files'] = $copied; $meta['added'] = $added; $meta['unchanged'] = $unchanged; $meta['has_db'] = $hasDb;
             qlopy_backup_save_meta($backupDir, $meta);
             qlopy_backup_size($backupDir, true);
             qlopy_audit_log('backup_created', ['backup' => basename($backupDir), 'type' => $type, 'folder' => $folder, 'files' => $copied, 'added' => count($added), 'db' => $hasDb]);
@@ -1162,7 +1208,7 @@ function qlopy_do_update_action_inner($args = [])
                 // Include the migration file in isolated scope
                 if (function_exists('qlopy_updater_log')) {
                     $bd = empty($backupDir) ? 'none' : $backupDir;
-                    $hasDb = (!empty($backupDir) && is_file($backupDir . DIRECTORY_SEPARATOR . 'db-backup.sql')) ? '1' : '0';
+                    $hasDb = (!empty($backupDir) && qlopy_backup_db_file($backupDir) !== null) ? '1' : '0';   // .sql.gz since C17
                     qlopy_updater_log('About to include migration script: ' . $runPath . ' ; backupDir=' . $bd . ' ; db_backup_exists=' . $hasDb);
                 }
                 $res = include $runPath;

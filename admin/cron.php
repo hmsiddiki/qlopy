@@ -645,9 +645,29 @@ document.addEventListener('DOMContentLoaded', function(){
         pager.appendChild(makeBtn('Next', 'btn-outline-secondary', page >= totalPages, function(){ qpQueuePage = Math.min(totalPages, page+1); fetchQueue(); }));
     }
 
+    // Refresh timing: every 30 s normally; every 4 s while a task is due or running (an update started from Updates finishes in
+    // seconds, and with 30 s it stayed on this list long after it was done), for at most 2 minutes so a site whose tasks wait for a
+    // cron job does not keep asking every few seconds. A hidden tab keeps the 30 s pace (never less than before); coming back to it
+    // refreshes at once.
+    var QP_POLL_SLOW = 30000, QP_POLL_FAST = 4000, QP_FAST_MAX = 30;
+    var qpPollTimer = null, qpBusy = false, qpFastLeft = QP_FAST_MAX;
+    function schedulePoll() {
+        clearTimeout(qpPollTimer);
+        var fast = qpBusy && qpFastLeft > 0 && !document.hidden;
+        if (fast) qpFastLeft--;
+        qpPollTimer = setTimeout(refreshAll, fast ? QP_POLL_FAST : QP_POLL_SLOW);
+    }
+    function noteBusy(rows) {
+        var now = Math.floor(Date.now() / 1000);
+        var busy = (rows || []).some(function (r) { var s = String(r.status || '').toLowerCase(); return s === 'running' || (s === 'pending' && (parseInt(r.next_run, 10) || 0) <= now + 5); });
+        if (busy && !qpBusy) qpFastLeft = QP_FAST_MAX;   // something new to watch: fast again
+        qpBusy = busy;
+        schedulePoll();
+    }
+
     function fetchQueue() {
         qpQueueFilter = (document.getElementById('qp-queue-filter') && document.getElementById('qp-queue-filter').value) || qpQueueFilter;
-        xhrPost({action:'cron_queue', page: qpQueuePage, per_page: qpQueuePerPage, status: qpQueueFilter}, function(err, res){ if (!err && res && res.queue) { renderQueue(res.queue); if (res.pagination) renderQueuePager(res.pagination); } });
+        xhrPost({action:'cron_queue', page: qpQueuePage, per_page: qpQueuePerPage, status: qpQueueFilter}, function(err, res){ if (!err && res && res.queue) { renderQueue(res.queue); if (res.pagination) renderQueuePager(res.pagination); noteBusy(res.queue); } else { schedulePoll(); } });
     }
 
     // Client-side AJAX handlers for Run / Force / Remove buttons
@@ -771,8 +791,9 @@ document.addEventListener('DOMContentLoaded', function(){
     var refreshAll = window.refreshAll;
 
     document.addEventListener('DOMContentLoaded', function(){
-        refreshAll();
-        setInterval(refreshAll, 30000);
+        refreshAll();   // its answer schedules the next refresh (schedulePoll)
+        // back to this tab (for example after watching an update in another one): refresh now, not at the next tick
+        document.addEventListener('visibilitychange', function () { if (!document.hidden) refreshAll(); });
     });
     // Filter control change -> reset to page 1 and refresh
     var filterEl = document.getElementById('qp-queue-filter'); if (filterEl) { filterEl.addEventListener('change', function(){ qpQueuePage = 1; fetchQueue(); }); }
