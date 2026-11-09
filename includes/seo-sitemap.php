@@ -227,6 +227,92 @@ function qp_seo_robots_txt(): string {
     return $txt;
 }
 
+// ---- robots.txt as a real file (C16) ----
+// Some servers never pass /robots.txt to PHP. ISPConfig's nginx vhost has `location = /robots.txt { ... }` with no try_files, so
+// without a file the visitor gets the web server's own 404. For those, Settings > SEO can write the generated text to a real
+// robots.txt in the site folder. The file's first line marks it as managed. Saving the SEO settings rewrites a managed file,
+// and a file without the mark (made by hand) is never written over or removed. Nothing here runs on a visitor request.
+
+const QP_SEO_ROBOTS_MARK = '# Managed by Settings > SEO: saving the SEO settings rewrites this file. Delete this line to keep your own edits.';
+
+/** The site folder's robots.txt path. */
+function qp_seo_robots_file(): string {
+    return dirname(__DIR__) . DIRECTORY_SEPARATOR . 'robots.txt';
+}
+
+/** 'none' (no file), 'managed' (written by Settings > SEO) or 'own' (any other file: the owner's, left alone). */
+function qp_seo_robots_file_state(): string {
+    $f = qp_seo_robots_file();
+    clearstatcache(true, $f);
+    if (!is_file($f)) return 'none';
+    $fh = @fopen($f, 'rb');
+    $first = $fh ? (string)fgets($fh, 512) : '';
+    if ($fh) fclose($fh);
+    return rtrim($first, "\r\n") === QP_SEO_ROBOTS_MARK ? 'managed' : 'own';
+}
+
+/** Write (or rewrite) the managed file from the current settings. Returns ['ok' => bool, 'error' => string]. Refuses an own file. */
+function qp_seo_robots_file_write(): array {
+    if (qp_seo_robots_file_state() === 'own') return ['ok' => false, 'error' => 'A robots.txt made by hand is already there; it is left alone.'];
+    $f = qp_seo_robots_file();
+    $tmp = $f . '.' . getmypid() . '.tmp';
+    if (@file_put_contents($tmp, QP_SEO_ROBOTS_MARK . "\n" . qp_seo_robots_txt(), LOCK_EX) === false || !@rename($tmp, $f)) {
+        @unlink($tmp);
+        return ['ok' => false, 'error' => 'The site folder is not writable. Upload the text below as robots.txt yourself.'];
+    }
+    @chmod($f, 0644);
+    return ['ok' => true, 'error' => ''];
+}
+
+/** Remove the managed file (the generated robots.txt is served again where the server passes it to PHP). An own file is kept. */
+function qp_seo_robots_file_remove(): array {
+    $state = qp_seo_robots_file_state();
+    if ($state === 'none') return ['ok' => true, 'error' => ''];
+    if ($state === 'own') return ['ok' => false, 'error' => 'That robots.txt was made by hand; remove it yourself if you want to.'];
+    return @unlink(qp_seo_robots_file()) ? ['ok' => true, 'error' => ''] : ['ok' => false, 'error' => 'The file could not be removed.'];
+}
+
+/** After the SEO settings are saved: a managed file follows the new settings. No file or an own file: nothing happens. */
+function qp_seo_robots_file_sync(): void {
+    if (qp_seo_robots_file_state() === 'managed') qp_seo_robots_file_write();
+}
+
+/**
+ * Ask the site for one of its own addresses, the way a search engine would, and say whether the expected answer came back.
+ * $kind 'robots' expects text starting with User-agent, 'sitemap' an XML sitemap. Only the site's own address is ever fetched,
+ * so private addresses and self-made certificates are allowed (a local development copy). Admin only, on request.
+ *
+ * @return array{ok: bool, url: string, status: int, note: string}
+ */
+function qp_seo_endpoint_check(string $kind): array {
+    $url = qp_seo_site_url($kind === 'robots' ? '/robots.txt' : '/sitemap.xml');
+    $out = ['ok' => false, 'url' => $url, 'status' => 0, 'note' => ''];
+    if (!function_exists('qp_http_get')) require_once __DIR__ . '/http-fetch.php';
+    [$ok, $body, $info] = qp_http_get($url, ['schemes' => ['https', 'http'], 'allow_private' => true, 'verify_tls' => false, 'max_bytes' => 512 * 1024, 'max_redirects' => 2, 'connect_timeout' => 4, 'timeout' => 8]);
+    if (!$ok) {
+        // qp_http_get() reports any answer outside 2xx as a failure ("The server answered HTTP 404.")
+        if (preg_match('/answered HTTP (\d{3})/', (string)$body, $m)) {
+            $out['status'] = (int)$m[1];
+            $out['note'] = $kind === 'robots' && $out['status'] === 404 && qp_seo_robots_file_state() === 'none'
+                ? 'The web server answers 404 without asking the site (ISPConfig does this for robots.txt). Write the file below.'
+                : 'The address answers HTTP ' . $out['status'] . '.' . ($kind === 'sitemap' && !qp_seo_sitemap_enabled() ? ' The sitemap is turned off in the settings.' : '');
+        } else {
+            $out['note'] = 'The site could not reach itself (' . rtrim((string)$body, '.') . '). Open the address in a browser to check.';
+        }
+        return $out;
+    }
+    $out['status'] = (int)($info['status'] ?? 0);
+    $body = ltrim((string)$body, "\xEF\xBB\xBF \t\r\n");
+    if ($kind === 'robots') {
+        $out['ok'] = $out['status'] === 200 && (bool)preg_match('/^(#[^\n]*\n\s*)*User-agent:/i', $body);
+        if (!$out['ok']) $out['note'] = 'The address answers, but not with robots.txt rules.';
+    } else {
+        $out['ok'] = $out['status'] === 200 && (bool)preg_match('/<(sitemapindex|urlset)\b/', $body);
+        if (!$out['ok']) $out['note'] = 'The address answers, but not with a sitemap.';
+    }
+    return $out;
+}
+
 function qp_seo_serve_body(string $type, string $body, string $etagSeed = ''): void {
     $etag = '"' . md5($body) . '"';
     header('Content-Type: ' . $type);

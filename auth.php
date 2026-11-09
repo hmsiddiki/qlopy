@@ -553,6 +553,22 @@ require_once __DIR__ . '/includes/qp-cron-due.php';
 if (is_file(__DIR__ . '/' . ($config['uploads_dir'] ?? 'uploads') . '/page-cache/state.json')) require_once __DIR__ . '/includes/page-cache.php';
 // Cached sitemaps are deleted when content changes (includes/seo-purge.php): only once a sitemap has been built, so the folder exists.
 if (is_dir(__DIR__ . '/' . ($config['uploads_dir'] ?? 'uploads') . '/seo-cache')) require_once __DIR__ . '/includes/seo-purge.php';
+// C17 cron tasks: the daily cleanup (qp_housekeeping) and the manual full backup (qlopy_full_backup, a heavy task). Registered here,
+// in every entry point, so every runner has a handler (the visitor's cron slice does not load includes/updater.php); the code is
+// loaded only when the task runs. Cost per request: two add_action() calls.
+if (function_exists('add_action')) {
+    add_action('qp_housekeeping', function () {
+        require_once __DIR__ . '/includes/updater.php';
+        return qp_housekeeping_run();
+    }, 10, 0);
+    add_action('qlopy_full_backup', function ($args = []) {
+        require_once __DIR__ . '/includes/updater.php';
+        $name = is_array($args) ? (string)($args[0] ?? '') : (string)$args;
+        if (!qlopy_backup_name_ok($name)) return false;
+        $dir = qlopy_updates_backups_dir() . DIRECTORY_SEPARATOR . $name;
+        return is_dir($dir) ? qlopy_backup_full_run($dir) : false;
+    }, 10, 1);
+}
 
 // NOTE: revoke logging removed. Previously wrote JSON lines to updates/logs/session_revokes.log
 

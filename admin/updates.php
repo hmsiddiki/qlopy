@@ -184,7 +184,8 @@ if (is_array($lastFail) && !empty($lastFail['code']) && (int)($lastFail['time'] 
       $('#allowRisky').prop('checked', !!s.allow_risky_migrations);
       $('#enableLogging').prop('checked', !!s.enable_logging);
       $('#requireSigned').prop('checked', !!s.require_signed_manifests);
-      $('#backupRetention').val(s.backup_retention || 10);
+      $('#backupRetention').val(s.backup_retention || 3);
+      $('#dbBackupOnUpdate').prop('checked', s.db_backup_on_update === undefined ? true : !!s.db_backup_on_update);
       $('#stopAutoUpdates').prop('checked', !!s.stop_auto_updates);
       $('#settingsResult').text('Loaded');
     } else { $('#settingsResult').text('Failed to load settings'); } }).fail(function(){ $('#settingsResult').text('Ajax error'); });
@@ -205,7 +206,8 @@ if (is_array($lastFail) && !empty($lastFail['code']) && (int)($lastFail['time'] 
         allow_risky_migrations: $('#allowRisky').is(':checked') ? 1 : 0,
         enable_logging: $('#enableLogging').is(':checked') ? 1 : 0,
         require_signed_manifests: $('#requireSigned').is(':checked') ? 1 : 0,
-        backup_retention: parseInt($('#backupRetention').val(), 10) || 10,
+        backup_retention: parseInt($('#backupRetention').val(), 10) || 3,
+        db_backup_on_update: $('#dbBackupOnUpdate').is(':checked') ? 1 : 0,
         stop_auto_updates: $('#stopAutoUpdates').is(':checked') ? 1 : 0
       };
       p('qlopy_save_settings', data).done(function(json){ clearBusy($btn); if (json && json.status === 'success') { $('#settingsResult').text('Saved'); (window.showToast||function(m,t){ alert(m); })('Settings saved — scheduling will use new intervals on next admin init.','success'); } else { $('#settingsResult').text('Save failed'); (window.showToast||function(m,t){ alert(m); })('Save failed','danger'); } }).fail(function(){ clearBusy($btn); (window.showToast||function(m,t){ alert(m); })('Ajax error','danger'); });
@@ -224,8 +226,11 @@ if (is_array($lastFail) && !empty($lastFail['code']) && (int)($lastFail['time'] 
 
 <div style="margin-top:18px;">
   <h3>Backups</h3>
+  <p class="small text-muted mb-2">Automatic backups are made before each update: the files it changes and, unless turned off below, the database. The newest ones are kept (see "Keep the last N automatic backups"). A full backup holds every file of the site and the database; it is never removed automatically. Backup folders have random names that cannot be guessed.</p>
   <button id="listBackups" class="actions-form btn btn-outline-secondary">List Backups</button>
-  <div id="backupsArea" style="margin-top:8px; font-family:monospace; white-space:pre-wrap; max-height:320px; overflow:auto; border:1px solid #eee; padding:8px; background:#fff;"></div>
+  <button id="fullBackup" type="button" class="btn btn-outline-primary ml-2">Back up the whole site now</button>
+  <label class="small ml-2 mb-0"><input id="fullBackupDb" type="checkbox" checked> include the database</label>
+  <div id="backupsArea" style="margin-top:8px; max-height:420px; overflow:auto; border:1px solid #eee; padding:8px; background:#fff;"></div>
 </div>
 
 <div style="margin-top:18px; border-top:1px solid #eee; padding-top:12px;">
@@ -234,7 +239,8 @@ if (is_array($lastFail) && !empty($lastFail['code']) && (int)($lastFail['time'] 
     <label>Checker interval (seconds): <input id="checkerInterval" type="number" min="60" class="form-control form-control-sm" /></label><br>
     <label>Initiator interval (seconds): <input id="initiatorInterval" type="number" min="60" class="form-control form-control-sm" /></label><br>
     <label>Allow risky migrations: <input id="allowRisky" type="checkbox" class="form-check-input" /></label><br>
-    <label>Backup retention (keep N backups): <input id="backupRetention" type="number" min="1" class="form-control form-control-sm" /></label><br>
+    <label>Keep the last N automatic backups (manual full backups are never removed): <input id="backupRetention" type="number" min="1" class="form-control form-control-sm" /></label><br>
+    <label>Back up the database before every update: <input id="dbBackupOnUpdate" type="checkbox" class="form-check-input" /></label><br>
     <label>Require signed manifests: <input id="requireSigned" type="checkbox" class="form-check-input" /></label><br>
     <label>Enable logging: <input id="enableLogging" type="checkbox" class="form-check-input" /></label><br>
     <label>Stop auto updates by default: <input id="stopAutoUpdates" type="checkbox" class="form-check-input" /></label><br>
@@ -333,22 +339,40 @@ if (is_array($lastFail) && !empty($lastFail['code']) && (int)($lastFail['time'] 
         console.log('qlopy_list_backups ->', json);
         if (json && json.status === 'success') {
           if (Array.isArray(json.backups) && json.backups.length) {
-            var $table = $('<table class="table table-sm">').append('<thead><tr><th>Label</th><th>DB</th><th>Created</th><th>Actions</th></thead>');
+            // C17: kind, size and state of each backup, and the total
+            var kinds = { update: 'Update', database: 'Database', selection: 'Before SQL', manual: 'Full (manual)' };
+            var fmt = function(n){ if (n === null || n === undefined) return ''; var u = ['B','KB','MB','GB']; var i = 0; n = +n; while (n >= 1024 && i < 3) { n /= 1024; i++; } return (i ? n.toFixed(1) : n) + ' ' + u[i]; };
+            var total = 0; json.backups.forEach(function(b){ total += +(b.size || 0); });
+            $area.append($('<div class="small text-muted mb-1">').text(json.backups.length + ' backup(s), ' + fmt(total) + ' in total'));
+            var $table = $('<table class="table table-sm">').append('<thead><tr><th>Created</th><th>Type</th><th>Contents</th><th>Size</th><th>Actions</th></tr></thead>');
             var $tbody = $('<tbody>');
             json.backups.forEach(function(b){
+              var m = b.metadata || {};
               var $tr = $('<tr>');
-              $tr.append($('<td>').text(b.label || b.name));
-              $tr.append($('<td>').text(b.has_db? 'Yes':'No'));
-              $tr.append($('<td>').text(b.created_at_formatted || b.created_at || ''));
-              var $actions = $('<td>');
-              var $restore = $('<button>').addClass('btn btn-sm btn-danger mr-2').text('Restore');
-              var $download = $('<button>').addClass('btn btn-sm btn-outline-secondary mr-2').text('Download');
-              var $delete = $('<button>').addClass('btn btn-sm btn-outline-danger').text('Delete');
+              $tr.append($('<td>').text(b.created_at_formatted || b.created_at || b.name));
+              $tr.append($('<td>').text((kinds[b.kind] || b.kind) + (m.type && b.kind === 'update' ? ' (' + m.type + (m.folder ? ' ' + m.folder : '') + (m.version ? ' ' + m.version : '') + ')' : '')));
+              var contents = b.status === 'running' ? 'being made…' : (b.status === 'failed' ? 'failed: ' + (m.error || '') : ((m.files !== undefined ? m.files + ' files' : 'files') + (b.has_db ? ' + database' : '')));
+              var $c = $('<td>').text(contents);
+              if (m.copy_errors) $c.append($('<div class="small text-warning">').text(m.copy_errors + ' file(s) could not be copied (in use or unreadable)').attr('title', (m.copy_failed || []).join('\n')));
+              $tr.append($c);
+              $tr.append($('<td>').text(fmt(b.size)));
+              var $actions = $('<td class="text-nowrap">');
+              var done = b.status === 'done';
+              var $restore = $('<button>').addClass('btn btn-sm btn-danger mr-2').text('Restore').prop('disabled', !done);
+              var $download = $('<button>').addClass('btn btn-sm btn-outline-secondary mr-2').text('Download').prop('disabled', !done);
+              var $delete = $('<button>').addClass('btn btn-sm btn-outline-danger').text('Delete').prop('disabled', b.status === 'running');
               $actions.append($restore).append($download).append($delete);
               $tr.append($actions);
               $tbody.append($tr);
 
-              $restore.on('click', function(){ if (!confirm('Restore backup "'+(b.name||b.label)+'"?')) return; var $r = $(this); setBtnBusy($r,'Restoring...'); p('qlopy_restore_backup', { backup: b.name }).done(function(res){ clearBtnBusy($r); if (res && res.status === 'success') { showToast('Restored: '+(b.name||b.label),'success'); } else { showToast('Restore failed','danger'); } }).fail(function(){ clearBtnBusy($r); showToast('Ajax error','danger'); }); });
+              // Files first; the database only when asked, after a plain warning: it replaces every table.
+              $restore.on('click', function(){
+                if (!confirm('Restore the files of this backup (' + (b.created_at_formatted || b.name) + ')?')) return;
+                var withDb = 0;
+                if (b.has_db) withDb = confirm('Also restore the DATABASE from this backup?\n\nEvery table goes back to how it was then. Orders, customers and changes made since then will be LOST.\n\nOK = restore the database too.  Cancel = files only.') ? 1 : 0;
+                var $r = $(this); setBtnBusy($r,'Restoring...');
+                p('qlopy_restore_backup', { backup: b.name, with_db: withDb }).done(function(res){ clearBtnBusy($r); if (res && res.status === 'success') { showToast('Restored ' + (res.restored ? 'backup' : '') + (withDb ? ' with database' : ' (files)'),'success'); } else { showToast('Restore failed','danger'); } }).fail(function(){ clearBtnBusy($r); showToast('Ajax error','danger'); });
+              });
               $download.on('click', function(){ var $d = $(this); setBtnBusy($d,'Preparing...'); p('qlopy_request_backup_download', { backup: b.name, ttl: 300 }).done(function(r){ clearBtnBusy($d); if (r && r.status === 'success' && r.url) { window.open(r.url,'_blank'); } else { showToast('Zip failed','danger'); } }).fail(function(){ clearBtnBusy($d); showToast('Ajax error','danger'); }); });
               $delete.on('click', function(){ if (!confirm('Delete backup "'+(b.name||b.label)+'"?')) return; var $d = $(this); setBtnBusy($d,'Deleting...'); p('qlopy_delete_backup', { backup: b.name }).done(function(rr){ clearBtnBusy($d); if (rr && rr.status === 'success') { showToast('Deleted backup','success'); $tr.remove(); } else { showToast('Delete failed','danger'); } }).fail(function(){ clearBtnBusy($d); showToast('Ajax error','danger'); }); });
             });
@@ -362,6 +386,23 @@ if (is_array($lastFail) && !empty($lastFail['code']) && (int)($lastFail['time'] 
         }
       }).fail(function(jqXHR, textStatus, err){ clearBtnBusy($btn); console.error('qlopy_list_backups fail', textStatus, err, jqXHR && jqXHR.responseText); showToast('Ajax error while listing backups','danger'); });
     } catch (ex) { clearBtnBusy($btn); console.error('listBackups exception', ex); showToast('Unexpected error','danger'); }
+  });
+
+  // C17: "Back up the whole site now" runs in the background; the list shows it as being made until it is done.
+  $('#fullBackup').off('click').on('click', function(){
+    var $b = $(this);
+    var p = window.qp_post || function(a,d){ d=d||{}; d.action=a; return $.post(window.ajaxurl||'ajax.php', d, null, 'json'); };
+    setBtnBusy($b, 'Starting...');
+    p('qlopy_create_full_backup', { with_db: $('#fullBackupDb').is(':checked') ? 1 : 0 }).done(function(r){
+      clearBtnBusy($b);
+      if (r && r.status === 'success') {
+        if (!r.background) showToast('Full backup made.','success');
+        else if (r.runner) showToast('Full backup started. It runs in the background; click List Backups to see when it is done.','success');
+        else showToast('Full backup queued, but no cron job has run on this site lately: it starts when one does. Set up the cron job shown on Settings > Cron.','warning');
+        $('#listBackups').trigger('click');
+      }
+      else { showToast((r && r.message) || 'Could not start the backup','danger'); }
+    }).fail(function(){ clearBtnBusy($b); showToast('Ajax error','danger'); });
   });
 })(jQuery);
 </script>

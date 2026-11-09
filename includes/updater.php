@@ -12,6 +12,8 @@ if (!defined('QLOPY_INIT')) { http_response_code(403); exit; }
  * site option APIs and qp-cron scheduling as next steps.
  */
 
+require_once __DIR__ . '/backups.php';   // backup folders, database dumps, restore and retention (C17)
+require_once __DIR__ . '/housekeeping.php';   // the daily cleanup task qp_housekeeping (C17)
 if (!isset($GLOBALS['qlopy_update_checks'])) {
     $GLOBALS['qlopy_update_checks'] = [];
 }
@@ -94,19 +96,18 @@ function qlopy_audit_log(string $action, array $meta = [])
 // List backup directories with simple metadata
 function qlopy_list_backups()
 {
+    qlopy_backups_protect();
+    qlopy_backups_rename_legacy();   // C17: folders from before get random names, once
     $d = qlopy_updates_backups_dir();
     $dirs = array_filter(@glob($d . DIRECTORY_SEPARATOR . '*'), 'is_dir');
     rsort($dirs);
     $out = [];
     foreach ($dirs as $path) {
         $name = basename($path);
-        $hasDb = is_file($path . DIRECTORY_SEPARATOR . 'db-backup.sql');
-        $metaFile = $path . DIRECTORY_SEPARATOR . 'metadata.json';
-        $meta = null;
-        if (is_file($metaFile)) {
-            $json = @file_get_contents($metaFile);
-            $meta = json_decode($json, true);
-        }
+        $hasDb = qlopy_backup_db_file($path) !== null;
+        $meta = qlopy_backup_meta($path) ?: null;
+        $status = (string)($meta['status'] ?? 'done');
+        if (is_array($meta)) unset($meta['added']);   // can be long; not needed by the screen
         $entry = [
             'name' => $name,
             'path' => $path,
@@ -114,6 +115,9 @@ function qlopy_list_backups()
             'label' => $meta['created_at'] ?? $name,
             'timestamp' => filemtime($path) ?: null,
             'metadata' => $meta,
+            'kind' => qlopy_backup_kind($path),     // update | database | selection | manual (C17)
+            'status' => $status,                    // done | running | failed
+            'size' => $status === 'done' ? qlopy_backup_size($path) : null,
         ];
         // Provide raw and site-formatted created_at for admin UI convenience
         $entry['created_at'] = $meta['created_at'] ?? null;
@@ -217,7 +221,8 @@ function qlopy_get_updater_settings()
         'enable_logging' => false,
         'require_signed_manifests' => false,
         'use_temporary_downloads' => true,
-        'backup_retention' => 10,
+        'backup_retention' => 3,          // automatic backups kept (C17; was 10)
+        'db_backup_on_update' => true,    // a database copy with every update backup (C17)
     ];
 }
 
@@ -652,24 +657,10 @@ if (function_exists('add_admin_action')) {
 }
 
 // Prune backups keeping the most recent $keep entries (best-effort)
+// Kept for callers of the old name. C17: only automatic backups count, manual full backups are never removed (includes/backups.php).
 function qlopy_prune_backups($keep = null)
 {
-    $settings = function_exists('qlopy_get_updater_settings') ? qlopy_get_updater_settings() : [];
-    $keep = $keep ?? (int)($settings['backup_retention'] ?? 10);
-    $d = qlopy_updates_backups_dir();
-    $dirs = array_filter(@glob($d . DIRECTORY_SEPARATOR . '*'), 'is_dir');
-    usort($dirs, function($a, $b){ return filemtime($b) <=> filemtime($a); });
-    $keep = max(1, (int)$keep);
-    $i = 0;
-    foreach ($dirs as $dir) {
-        $i++; if ($i <= $keep) continue;
-        // remove directory recursively (best-effort)
-        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
-        foreach ($it as $f) {
-            if ($f->isDir()) @rmdir($f->getPathname()); else @unlink($f->getPathname());
-        }
-        @rmdir($dir);
-    }
+    return qlopy_backups_prune($keep === null ? null : (int)$keep);
 }
 
 // Reschedule updater cron tasks using current settings
@@ -1061,49 +1052,6 @@ function qlopy_do_update_action_inner($args = [])
         qlopy_updater_log('Unknown update type: ' . $type); return ['error'=>'unknown_type'];
     }
 
-    // Backup is intentionally skipped to speed update (no filesystem or DB backups).
-    // Set this to true if you want to re-enable backups.
-    $doBackup = true;
-    $backupDir = null;
-    if ($doBackup) {
-        // Backup: copy target to backups dir
-        $backupDir = qlopy_updates_backups_dir() . DIRECTORY_SEPARATOR . date('Ymd_His') . '_' . uniqid();
-        @mkdir($backupDir, 0755, true);
-        // backup directory created (logging removed)
-        // simple recursive copy (best-effort)
-        if (is_dir($target)) {
-            qlopy_recursive_copy($target, $backupDir);
-        }
-        // write simple metadata for this backup
-        $meta = [
-            'created_at' => date('c'),
-            'type' => $type,
-            'folder' => $folder,
-            'manifest' => $manifest,
-            'target' => $target,
-        ];
-        $meta['actor'] = $_SERVER['REMOTE_USER'] ?? $_SERVER['PHP_AUTH_USER'] ?? ($_SERVER['USER'] ?? 'unknown');
-        @file_put_contents($backupDir . DIRECTORY_SEPARATOR . 'metadata.json', json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        qlopy_audit_log('backup_created', $meta);
-        // prune older backups (keep last N)
-        qlopy_prune_backups();
-        // DB backup if manifest requests migration
-        if (!empty($manifest['db_migrate'])) {
-            $dbBackup = qlopy_db_backup();
-            if ($dbBackup === null) {
-                qlopy_updater_log('DB backup failed or unavailable');
-            } else {
-                // move db backup into current backup dir if different
-                $dbFile = rtrim($dbBackup, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'db-backup.sql';
-                if (is_file($dbFile)) {
-                    @copy($dbFile, $backupDir . DIRECTORY_SEPARATOR . 'db-backup.sql');
-                }
-            }
-        }
-    } else {
-        // backups skipped (logging removed)
-    }
-
     // Apply update: copy from extracted into target while respecting whitelist and always skipping config.php in project root
     $skip = array_map(function($p){ return trim($p, "\/"); }, (array)$whitelist);
     // Always enforce config.php skip at root
@@ -1129,6 +1077,34 @@ function qlopy_do_update_action_inner($args = [])
     if ($type === 'core') {
         $source = qlopy_map_core_source($source);
         $skip = array_map('qlopy_map_core_path', $skip);
+    }
+    // Backup (C17): only the files this update overwrites, the list of files it adds, and the database when "Back up the database
+    // before every update" is on (default) or the package migrates the database. Made here, after the package's files and skip list
+    // are known, so it holds exactly what the update changes. Folder name with a random part (includes/backups.php).
+    $backupDir = null;
+    if (is_dir($target)) {
+        $settingsNow = qlopy_get_updater_settings();
+        $backupDir = qlopy_backup_new('update', [
+            'type' => $type,
+            'folder' => $folder,
+            'version' => (string)($manifest['version'] ?? ''),
+            'target' => $target,
+            'status' => 'running',
+        ]);
+        if ($backupDir !== null) {
+            [$copied, $added] = qlopy_backup_copy_changed($source, $target, $skip, $backupDir);
+            $withDb = !empty($manifest['db_migrate']) || ($settingsNow['db_backup_on_update'] ?? true);
+            $hasDb = $withDb ? qlopy_db_dump($backupDir . DIRECTORY_SEPARATOR . 'db-backup.sql.gz') : false;
+            if ($withDb && !$hasDb) qlopy_updater_log('DB backup failed or unavailable');
+            $meta = qlopy_backup_meta($backupDir);
+            $meta['status'] = 'done'; $meta['files'] = $copied; $meta['added'] = $added; $meta['has_db'] = $hasDb;
+            qlopy_backup_save_meta($backupDir, $meta);
+            qlopy_backup_size($backupDir, true);
+            qlopy_audit_log('backup_created', ['backup' => basename($backupDir), 'type' => $type, 'folder' => $folder, 'files' => $copied, 'added' => count($added), 'db' => $hasDb]);
+            qlopy_backups_prune();   // keep the newest N automatic backups
+        } else {
+            qlopy_updater_log('Backup folder could not be created');
+        }
     }
     qlopy_recursive_apply($source, $target, $skip);
 
@@ -1347,48 +1323,18 @@ function qlopy_recursive_apply($source, $target, array $whitelist = [])
     }
 }
 
-// Create a SQL dump of the database (schema + data) into backups dir
+// A database backup on its own (kind "database"), kept for its callers. C17: written row by row and compressed (db-backup.sql.gz).
+// Returns the backup folder, or null.
 function qlopy_db_backup(): ?string
 {
-    if (!function_exists('db')) return null;
-    $pdo = db();
-    $backupDir = qlopy_updates_backups_dir() . DIRECTORY_SEPARATOR . date('Ymd_His') . '_' . uniqid('db_', true);
-    @mkdir($backupDir, 0755, true);
-    $file = $backupDir . DIRECTORY_SEPARATOR . 'db-backup.sql';
-    $out = '';
-    try {
-        $stmt = $pdo->query('SHOW TABLES');
-        $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
-        foreach ($tables as $table) {
-            $row = $pdo->query("SHOW CREATE TABLE `{$table}`")->fetch(PDO::FETCH_ASSOC);
-            $create = $row['Create Table'] ?? ($row['Create View'] ?? null);
-            if ($create) {
-                $out .= "-- Table structure for {$table}\n";
-                $out .= "DROP TABLE IF EXISTS `{$table}`;\n";
-                $out .= $create . ";\n\n";
-            }
-            // dump data
-            $rows = $pdo->query('SELECT * FROM `' . $table . '`')->fetchAll(PDO::FETCH_ASSOC);
-            if (!empty($rows)) {
-                $out .= "-- Dumping data for {$table}\n";
-                foreach ($rows as $r) {
-                    $cols = array_map(function($c){ return "`$c`"; }, array_keys($r));
-                    $vals = array_map(function($v) use ($pdo) {
-                        if ($v === null) return 'NULL';
-                        if (is_bool($v)) return $v ? '1' : '0';
-                        return $pdo->quote($v);
-                    }, array_values($r));
-                    $out .= 'INSERT INTO `' . $table . '` (' . implode(',', $cols) . ') VALUES (' . implode(',', $vals) . ');\n';
-                }
-                $out .= "\n";
-            }
-        }
-        file_put_contents($file, $out);
-        return $backupDir;
-    } catch (Throwable $e) {
-        qlopy_updater_log('DB backup failed: ' . $e->getMessage());
-        return null;
-    }
+    $dir = qlopy_backup_new('database', ['status' => 'running']);
+    if ($dir === null) return null;
+    $ok = qlopy_db_dump($dir . DIRECTORY_SEPARATOR . 'db-backup.sql.gz');
+    if (!$ok) { qlopy_backup_rmdir($dir); qlopy_updater_log('DB backup failed'); return null; }
+    $m = qlopy_backup_meta($dir); $m['status'] = 'done'; $m['has_db'] = true; qlopy_backup_save_meta($dir, $m);
+    qlopy_backup_size($dir, true);
+    qlopy_backups_prune();
+    return $dir;
 }
 
 // Run SQL script (simple splitter) with safety checks
@@ -1502,29 +1448,11 @@ function qlopy_dry_run_sql_script(string $sql): array
     }
 }
 
-// Restore backup directory: copies files back and imports DB dump if present
-function qlopy_restore_backup(string $backupDir): array
+// Restore a backup (kept for its callers). C17: files go back to where they came from with their paths, files the update added
+// are removed, and the database is loaded only when $withDb is true. The automatic rollback after a failed migration passes true.
+function qlopy_restore_backup(string $backupDir, bool $withDb = true): array
 {
-    if (!is_dir($backupDir)) return ['error'=>'not_found'];
-    // restore files
-    $items = scandir($backupDir);
-    foreach ($items as $it) {
-        if ($it === '.' || $it === '..') continue;
-        if ($it === 'db-backup.sql') continue;
-        $src = $backupDir . DIRECTORY_SEPARATOR . $it;
-        // copy recursively into project root
-        qlopy_recursive_apply($src, qlopy_project_root(), []);
-    }
-    $dbfile = $backupDir . DIRECTORY_SEPARATOR . 'db-backup.sql';
-    if (is_file($dbfile)) {
-        $sql = file_get_contents($dbfile);
-        // allow risky during restore
-        if (!defined('QLOPY_ALLOW_RISKY_MIGRATIONS')) define('QLOPY_ALLOW_RISKY_MIGRATIONS', true);
-        $res = qlopy_run_sql_script($sql);
-        if (isset($res['error'])) return ['error'=>'db_restore_failed','details'=>$res];
-    }
-    qlopy_audit_log('backup_restored', ['backup'=>$backupDir]);
-    return ['success'=>true];
+    return qlopy_backup_restore($backupDir, $withDb);
 }
 
 // Admin AJAX: restore latest backup (action: 'qlopy_restore_latest_backup')
@@ -1535,7 +1463,8 @@ if (function_exists('add_admin_action')) {
         rsort($dirs);
         $latest = $dirs[0] ?? null;
         if (!$latest) { echo json_encode(['status'=>'error','message'=>'no_backups']); return; }
-        $res = qlopy_restore_backup($latest);
+        $rq = is_array($req) ? ($req[0] ?? $req) : [];
+        $res = qlopy_backup_restore($latest, !empty($rq['with_db']));   // C17: database only when asked
         if (isset($res['error'])) echo json_encode(['status'=>'error','message'=>$res]); else echo json_encode(['status'=>'success','restored'=>$latest]);
     });
 }
@@ -1573,6 +1502,7 @@ if (function_exists('add_admin_action')) {
         $base = qlopy_updates_backups_dir();
         $path = $base . DIRECTORY_SEPARATOR . $name;
         if (!is_dir($path)) { echo json_encode(['status'=>'error','message'=>'not_found']); return; }
+        if ((qlopy_backup_meta($path)['status'] ?? 'done') === 'running') { echo json_encode(['status'=>'error','message'=>'backup_running']); return; }   // C17
 
         // recursive delete
         $it = new RecursiveDirectoryIterator($path, RecursiveDirectoryIterator::SKIP_DOTS);
@@ -1590,6 +1520,35 @@ if (function_exists('add_admin_action')) {
     });
 }
 
+// Admin AJAX (C17): "Back up the whole site now" (action: 'qlopy_create_full_backup', with_db 1|0). Every file except uploads/updates,
+// plus the database unless with_db=0. Runs in the background (cron queue task qlopy_full_backup); the list shows it as running
+// until it is done. Manual backups are never removed automatically.
+if (function_exists('add_admin_action')) {
+    add_admin_action('iitcm_admin_ajax_qlopy_create_full_backup', function($req) {
+        $r = is_array($req) ? ($req[0] ?? $req) : [];
+        foreach (qlopy_list_backups() as $b) {
+            if ($b['kind'] === 'manual' && $b['status'] === 'running') { echo json_encode(['status'=>'error','message'=>'A full backup is already running.']); return; }
+        }
+        $withDb = !isset($r['with_db']) || !empty($r['with_db']);
+        $dir = qlopy_backup_new('manual', ['status' => 'running', 'db' => $withDb]);
+        if ($dir === null) { echo json_encode(['status'=>'error','message'=>'The backups folder is not writable.']); return; }
+        $name = basename($dir);
+        if (function_exists('qp_schedule_single_event')) {
+            // a heavy task (qp_cron_heavy_hooks): a real cron job runs it, or the built-in worker when "heavy tasks in the worker" is on.
+            // Say whether one of those has been seen lately, so the screen can tell the owner when nothing will pick it up.
+            qp_schedule_single_event(time(), 'qlopy_full_backup', [$name], 0);
+            $state = function_exists('qp_cron_state') ? qp_cron_state() : [];
+            $runner = (!empty($state['runner_at']) && time() - (int)$state['runner_at'] < 900)
+                || (function_exists('qp_cron_worker_runs_heavy') && qp_cron_worker_runs_heavy());
+            echo json_encode(['status'=>'success','backup'=>$name,'background'=>true,'runner'=>$runner]);
+        } else {
+            $res = qlopy_backup_full_run($dir);   // no queue: run now
+            echo json_encode(['status'=>$res['ok'] ? 'success' : 'error','backup'=>$name,'background'=>false,'message'=>$res['error'] ?? '']);
+        }
+        qlopy_audit_log('backup_full_requested', ['backup'=>$name,'with_db'=>$withDb]);
+    });
+}
+
 // Admin AJAX: restore specific backup (action: 'qlopy_restore_backup')
 if (function_exists('add_admin_action')) {
     add_admin_action('iitcm_admin_ajax_qlopy_restore_backup', function($req) {
@@ -1599,7 +1558,7 @@ if (function_exists('add_admin_action')) {
         $base = realpath(qlopy_updates_backups_dir());
         $path = realpath($base . DIRECTORY_SEPARATOR . $backup);
         if (!$path || strpos($path, $base) !== 0 || !is_dir($path)) { echo json_encode(['status'=>'error','message'=>'invalid_backup']); return; }
-        $res = qlopy_restore_backup($path);
+        $res = qlopy_backup_restore($path, !empty($r['with_db']));   // C17: database only when asked (it replaces every table)
         if (isset($res['error'])) echo json_encode(['status'=>'error','message'=>$res]); else echo json_encode(['status'=>'success','restored'=>$backup]);
     });
 }
@@ -1718,6 +1677,7 @@ if (function_exists('add_admin_action')) {
         $enableLogging = isset($r['enable_logging']) ? (bool)$r['enable_logging'] : false;
         $stopAuto = isset($r['stop_auto_updates']) ? (bool)$r['stop_auto_updates'] : false;
         $retain = isset($r['backup_retention']) ? (int)$r['backup_retention'] : null;
+        $dbOnUpdate = isset($r['db_backup_on_update']) ? (bool)$r['db_backup_on_update'] : null;   // C17
         $save = [];
         if ($checker !== null) $save['checker_interval'] = max(60, $checker);
         if ($initiator !== null) $save['initiator_interval'] = max(60, $initiator);
@@ -1725,6 +1685,7 @@ if (function_exists('add_admin_action')) {
         $save['enable_logging'] = $enableLogging;
         $save['stop_auto_updates'] = $stopAuto;
         if ($retain !== null) $save['backup_retention'] = max(1, $retain);
+        if ($dbOnUpdate !== null) $save['db_backup_on_update'] = $dbOnUpdate;
         $ok = qlopy_set_updater_settings($save);
         // apply new schedule immediately
         if ($ok && function_exists('qlopy_reschedule_scheduler_tasks')) {
@@ -1820,19 +1781,17 @@ if (function_exists('add_admin_action')) {
         }
         if (!is_array($stmts)) { echo json_encode(['status'=>'error','message'=>'statements must be array']); return; }
 
-        // Create lightweight backup before applying (DB backup + metadata)
-        $backupDir = qlopy_updates_backups_dir() . DIRECTORY_SEPARATOR . date('Ymd_His') . '_sel_' . uniqid();
-        @mkdir($backupDir, 0755, true);
-        $dbBackup = qlopy_db_backup();
-        if ($dbBackup && is_dir($dbBackup)) {
-            // move sql file into our backup
-            $dbFile = $dbBackup . DIRECTORY_SEPARATOR . 'db-backup.sql';
-            if (is_file($dbFile)) @copy($dbFile, $backupDir . DIRECTORY_SEPARATOR . 'db-backup.sql');
+        // Backup before applying (C17): a "selection" backup holding the database dump, in one folder with a random name.
+        $backupDir = qlopy_backup_new('selection', ['action' => 'apply_selected_migration', 'count' => count($stmts), 'status' => 'running']);
+        $meta = $backupDir !== null ? qlopy_backup_meta($backupDir) : [];
+        if ($backupDir !== null) {
+            $meta['has_db'] = qlopy_db_dump($backupDir . DIRECTORY_SEPARATOR . 'db-backup.sql.gz');
+            $meta['status'] = 'done';
+            qlopy_backup_save_meta($backupDir, $meta);
+            qlopy_backup_size($backupDir, true);
+            qlopy_backups_prune();
         }
-        $meta = ['created_at'=>date('c'),'action'=>'apply_selected_migration','count'=>count($stmts)];
-        $meta['actor'] = $_SERVER['REMOTE_USER'] ?? $_SERVER['PHP_AUTH_USER'] ?? ($_SERVER['USER'] ?? 'unknown');
-        @file_put_contents($backupDir . DIRECTORY_SEPARATOR . 'metadata.json', json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        qlopy_updater_log('Created pre-migration backup: ' . $backupDir);
+        qlopy_updater_log('Created pre-migration backup: ' . (string)$backupDir);
         qlopy_audit_log('pre_migration_backup', $meta);
 
         // Normalize statements into [text] and keep original indices mapping
@@ -1869,7 +1828,7 @@ function qlopy_create_backup_zip(string $backupName): ?string
     $path = realpath($base . DIRECTORY_SEPARATOR . $backupName);
     if (!$path || strpos($path, $base) !== 0 || !is_dir($path)) return null;
     $tmp = qlopy_updates_tmp_dir();
-    $zipName = 'backup_' . preg_replace('/[^a-z0-9_\-]/i', '_', $backupName) . '_' . time() . '.zip';
+    $zipName = 'backup_' . bin2hex(random_bytes(16)) . '.zip';   // C17: not guessable; removed after a day (qlopy_backups_tmp_cleanup)
     $zipPath = $tmp . DIRECTORY_SEPARATOR . $zipName;
     $za = new ZipArchive();
     if ($za->open($zipPath, ZipArchive::CREATE) !== true) return null;

@@ -111,6 +111,10 @@ if (file_exists($updater_file)) {
     if (function_exists('central_init_update')) {
         central_init_update();
     }
+    // C17: the daily cleanup task (includes/housekeeping.php) is in the queue; looked at once a day at most.
+    if (function_exists('qp_housekeeping_ensure_scheduled')) {
+        try { qp_housekeeping_ensure_scheduled(); } catch (Throwable $_) {}
+    }
     // Schedule recurring checker (6 hours) and initiator (12 hours) if qp-cron is available
     if (function_exists('qp_schedule_single_event') && function_exists('qp_next_scheduled')) {
         // use configured intervals (seconds)

@@ -109,7 +109,8 @@ function qp_cron_recompute_next_due(): int {
  * `qp_cron_heavy_hooks`. (A per-task `heavy` argument on qp_queue_task is planned in C2 step 4.)
  */
 function qp_cron_heavy_hooks(): array {
-    $h = ['qlopy_do_update', 'qlopy_update_checker', 'qlopy_update_checker_login', 'qlopy_update_initiator'];
+    // qlopy_full_backup (C17): copies the whole site and dumps the database, so it runs from a real cron, never inside a visitor's slice
+    $h = ['qlopy_do_update', 'qlopy_update_checker', 'qlopy_update_checker_login', 'qlopy_update_initiator', 'qlopy_full_backup'];
     if (function_exists('apply_filters')) {
         $f = apply_filters('qp_cron_heavy_hooks', $h);
         if (is_array($f)) $h = array_values(array_unique(array_filter(array_map('strval', $f), 'strlen')));

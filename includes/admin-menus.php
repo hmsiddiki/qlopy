@@ -70,6 +70,7 @@ register_admin_menu('updates', 'Updates', $admin_dir_path . 'updates.php', null,
 register_admin_menu('seo', 'SEO', $admin_dir_path . 'seo.php', null, 'settings', 'seo');
 register_admin_menu('api', 'API', $admin_dir_path . 'api.php', null, 'settings', 'api');
 register_admin_menu('transfer', 'Import / Export', $admin_dir_path . 'transfer.php', null, 'settings', 'transfer');
+register_admin_menu('storage', 'Storage & cleanup', $admin_dir_path . 'storage.php', null, 'settings', 'storage');   // C17
 
 // Discussion (comments) settings
 register_admin_menu('discussion', 'Discussion', $admin_dir_path . 'discussion.php', null, 'settings', 'discussion');

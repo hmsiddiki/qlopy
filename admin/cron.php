@@ -252,7 +252,8 @@ require_once __DIR__ . '/inc/header.php';
         <?php endif; ?>
     </div>
 
-    <?php $ping_on = function_exists('qp_cron_ping_enabled') && qp_cron_ping_enabled(); $ping_url = rtrim(function_exists('get_home_url') ? get_home_url() : SITE_URL, '/') . '/?qp_cron=1'; ?>
+    <?php // read the option itself: qp_cron_ping_enabled() lives in includes/qp-cron-worker.php, which this page does not load, so the box always showed off
+    $ping_on = function_exists('get_option_meta') && filter_var(get_option_meta('qp_cron_ping_enabled'), FILTER_VALIDATE_BOOLEAN); $ping_url = rtrim(function_exists('get_home_url') ? get_home_url() : SITE_URL, '/') . '/?qp_cron=1'; ?>
     <div class="mb-4">
         <h5>External Ping</h5>
         <form method="post">
@@ -270,6 +271,24 @@ require_once __DIR__ . '/inc/header.php';
             Wrong keys get a bare 403; ten in a minute lock it for a minute; runs are spaced at least 5 seconds apart. While it keeps calling, the built-in worker stays quiet.
             <?php if (!empty($cs['last_ping_run'])): ?>Last ping run: <?= htmlspecialchars($cs_fmt($cs['last_ping_run']['at'])) ?> (<?= (int)$cs['last_ping_run']['tasks'] ?> tasks, <?= (int)$cs['last_ping_run']['posts'] ?> posts, <?= (int)$cs['last_ping_run']['mail'] ?> mails).<?php endif; ?>
         </p>
+        <?php if ($ping_on && $runner_key): /* ready to paste into a web-cron service: the URL with this site's key */
+            $ping_get = rtrim(function_exists('get_home_url') ? get_home_url() : SITE_URL, '/') . '/?qp_cron=' . rawurlencode($runner_key);
+            $ping_post = 'curl -fsS -X POST -d ' . escapeshellarg('key=' . $runner_key) . ' ' . escapeshellarg($ping_url); ?>
+        <div class="border rounded p-2" style="max-width:900px;">
+            <div class="small font-weight-bold mb-1">Ready to copy (keep these private: they hold the runner key)</div>
+            <label class="small text-muted mb-0" for="qp-ping-get">URL for a web-cron service that can only call an address (GET; the key then appears in server logs):</label>
+            <div class="input-group input-group-sm mb-2">
+                <input id="qp-ping-get" class="form-control" readonly value="<?= htmlspecialchars($ping_get) ?>">
+                <div class="input-group-append"><button class="btn btn-outline-primary qp-copy" type="button" data-copy="qp-ping-get">Copy</button></div>
+            </div>
+            <label class="small text-muted mb-0" for="qp-ping-post">Better, when the service can send a POST (the key stays out of server logs):</label>
+            <div class="input-group input-group-sm">
+                <input id="qp-ping-post" class="form-control" readonly value="<?= htmlspecialchars($ping_post) ?>">
+                <div class="input-group-append"><button class="btn btn-outline-primary qp-copy" type="button" data-copy="qp-ping-post">Copy</button></div>
+            </div>
+            <div class="small text-muted mt-1">Call it every 5 minutes. Rotating the runner key below changes these.</div>
+        </div>
+        <?php endif; ?>
     </div>
 
     <div class="mb-4">
@@ -281,7 +300,27 @@ require_once __DIR__ . '/inc/header.php';
                     <button id="qp-copy-key" class="btn btn-outline-primary" type="button">Copy</button>
                 </div>
             </div>
-            <p class="small text-muted mt-2">CLI example: <code>e:\\Wnmp\\php\\php.exe qp-cron.php --key=<?= htmlspecialchars($runner_key) ?></code></p>
+            <?php
+            // The command for a crontab (ISPConfig: Sites > Cron Jobs), built for this server: its command-line PHP and this site's qp-cron.php.
+            // (It showed a fixed Windows path from a development machine.) PHP_BINARY is php-fpm under FPM, so the CLI binary is looked
+            // for next to it: "php8.2" (Debian/Ubuntu), then "php", then plain "php".
+            $cli_php = 'php';
+            if (DIRECTORY_SEPARATOR === '\\') {
+                $cli_php = is_file(PHP_BINDIR . '\\php.exe') ? PHP_BINDIR . '\\php.exe' : 'php';
+            } else {
+                // open_basedir (ISPConfig sets it per site) usually hides /usr/bin, so nothing may be found: then the Debian / Ubuntu name
+                // of the same PHP version, which is what ISPConfig servers use
+                $cli_php = '/usr/bin/php' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;
+                foreach ([PHP_BINDIR . '/php' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION, PHP_BINDIR . '/php'] as $cand) {
+                    if (@is_file($cand) && @is_executable($cand)) { $cli_php = $cand; break; }
+                }
+            }
+            $cron_script = realpath(__DIR__ . '/../qp-cron.php') ?: (dirname(__DIR__) . DIRECTORY_SEPARATOR . 'qp-cron.php');
+            $cli_cmd = $cli_php . ' ' . $cron_script . ' --key=' . $runner_key;
+            ?>
+            <p class="small text-muted mt-2 mb-1">Command for a server cron job, every 5 minutes (in ISPConfig: Sites &gt; Cron Jobs, run as the site's user):</p>
+            <p class="small mb-1"><code><?= htmlspecialchars($cli_cmd) ?></code></p>
+            <p class="small text-muted">Crontab line: <code>*/5 * * * * <?= htmlspecialchars($cli_cmd) ?> &gt;/dev/null 2&gt;&amp;1</code></p>
         <?php else: ?>
             <p class="text-muted">No runner key set. Click <strong>Generate/Rotate Runner Key</strong> to create one.</p>
         <?php endif; ?>
@@ -520,6 +559,16 @@ add_action('iitcm_ajax_nopriv_contact_submit', function($req) {
 
 <script>
 document.addEventListener('DOMContentLoaded', function(){
+    // the ready-to-copy web-cron URL and command: each button copies the field named in data-copy
+    document.querySelectorAll('.qp-copy').forEach(function (b) {
+        b.addEventListener('click', function () {
+            var inp = document.getElementById(b.getAttribute('data-copy'));
+            if (!inp) return;
+            var done = function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); };
+            if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(inp.value).then(done).catch(function () { inp.select(); }); }
+            else { inp.select(); try { document.execCommand('copy'); done(); } catch (e) {} }
+        });
+    });
     var btn = document.getElementById('qp-copy-key');
     if (!btn) return;
     btn.addEventListener('click', function(){

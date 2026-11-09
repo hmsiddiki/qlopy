@@ -30,6 +30,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['seo_action'])) {
     } elseif ($act === 'toggle_redirect') { qp_seo_redirect_set_enabled((int)$_POST['id'], !empty($_POST['enable'])); qp_set_admin_notice('Redirect updated.'); }
     elseif ($act === 'delete_redirect') { qp_seo_redirect_delete((int)$_POST['id']); qp_set_admin_notice('Redirect deleted.'); }
     elseif ($act === 'clear_404') { qp_seo_404_clear(); qp_set_admin_notice('The 404 log was cleared.'); }
+    elseif ($act === 'robots_write' || $act === 'robots_remove') {   // C16: robots.txt as a real file
+        $r = $act === 'robots_write' ? qp_seo_robots_file_write() : qp_seo_robots_file_remove();
+        qp_set_admin_notice($r['ok'] ? ($act === 'robots_write' ? 'robots.txt was written to the site folder.' : 'robots.txt was removed from the site folder.') : $r['error']);
+        header('Location: seo.php#robots-file'); exit;
+    } elseif ($act === 'robots_check') {
+        // the site asks itself: let go of the session lock meanwhile, or a server that runs one PHP worker per session waits on itself
+        if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
+        $check = ['robots' => qp_seo_endpoint_check('robots'), 'sitemap' => qp_seo_endpoint_check('sitemap'), 'at' => time()];
+        if (session_status() !== PHP_SESSION_ACTIVE) @session_start();
+        $_SESSION['qp_seo_endpoint_check'] = $check;
+        header('Location: seo.php#robots-file'); exit;
+    }
     header('Location: seo.php?tab=' . ($act === 'clear_404' ? '404' : 'redirects')); exit;
 }
 
@@ -64,6 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_seo'])) {
     update_option_meta('qp_seo_enabled', !empty($_POST['qp_seo_enabled']));
     qp_seo_sitemap_dir();   // the folder's existence is what makes every entry point load the purge and slug listeners
     qp_seo_redirects_install();
+    qp_seo_robots_file_sync();   // a robots.txt written by this screen follows the new settings (C16)
     if (!empty($_POST['qp_seo_enabled']) && function_exists('qp_schedule_single_event') && function_exists('qp_next_scheduled') && qp_next_scheduled('qp_seo_404_prune') === null) qp_schedule_single_event(time() + 3600, 'qp_seo_404_prune', [], 86400);
     // The page cache must not keep pages built with the old tags.
     if (function_exists('qp_page_cache_purge_all')) qp_page_cache_purge_all();
@@ -88,6 +101,9 @@ $printed = array_keys(array_filter($theme_tags));
     <li class="nav-item"><a class="nav-link<?= $tab === 'redirects' ? ' active' : '' ?>" href="seo.php?tab=redirects">Redirects</a></li>
     <li class="nav-item"><a class="nav-link<?= $tab === '404' ? ' active' : '' ?>" href="seo.php?tab=404">404 log</a></li>
   </ul>
+  <?php if (!$enabled && ($tab === 'redirects' || $tab === '404')): /* index.php runs the redirect step and the 404 log only with Advanced SEO on */ ?>
+  <div class="alert alert-warning"><strong>Advanced SEO is off</strong>, so <?= $tab === 'redirects' ? 'these redirects are saved but not used: visitors still get the old address' : 'missing pages are not being logged' ?>. Turn it on under <a href="seo.php">Settings</a> (&ldquo;Advanced SEO&rdquo;).</div>
+  <?php endif; ?>
   <?php if ($tab === 'redirects'): ?>
     <?php $rules = qp_seo_redirect_list(); $prefill = (string)($_GET['source'] ?? ''); ?>
     <p class="small text-muted">Send visitors and search engines from an old address to a new one. Addresses are relative to the site (<code>/old-page</code>), case does not matter, a trailing slash does not matter. A rule goes one step only: point it at the final address. Rules are added automatically when you change a post's address.</p>
@@ -116,7 +132,7 @@ $printed = array_keys(array_filter($theme_tags));
     <table class="table table-sm"><thead><tr><th>Address</th><th>Times</th><th>Last seen</th><th>Came from</th><th></th></tr></thead><tbody>
     <?php foreach ($log as $l): ?>
       <tr><td><code><?= $h($l['path']) ?></code></td><td><?= (int)$l['hits'] ?></td><td class="small"><?= $h(format_site_datetime((int)$l['last_seen'])) ?></td><td class="small"><?= $h(mb_substr($l['referrer'], 0, 60)) ?></td><td><a class="btn btn-sm btn-outline-primary" href="seo.php?tab=redirects&amp;source=<?= $h(rawurlencode($l['path'])) ?>">Redirect</a></td></tr>
-    <?php endforeach; if (!$log): ?><tr><td colspan="5" class="text-muted">Nothing logged. (Only requests made while the SEO module is on are counted.)</td></tr><?php endif; ?>
+    <?php endforeach; if (!$log): ?><tr><td colspan="5" class="text-muted">Nothing logged. (Only requests made while Advanced SEO is on are counted.)</td></tr><?php endif; ?>
     </tbody></table>
     <form method="post"><input type="hidden" name="seo_nonce" value="<?= $h($seo_nonce) ?>"><input type="hidden" name="seo_action" value="clear_404"><button class="btn btn-outline-danger btn-sm">Clear the log</button></form>
   <?php endif; ?>
@@ -220,6 +236,27 @@ $printed = array_keys(array_filter($theme_tags));
 
     <button class="btn btn-primary mt-3" type="submit" name="save_seo" value="1">Save SEO settings</button>
   </form>
+
+  <?php /* C16: robots.txt as a real file, and a check that robots.txt and the sitemap really reach search engines. Separate forms: not inside the settings form. */
+    $rState = qp_seo_robots_file_state();
+    $rCheck = $_SESSION['qp_seo_endpoint_check'] ?? null; unset($_SESSION['qp_seo_endpoint_check']);
+    $rSub = rtrim((string)parse_url(qp_seo_site_url(), PHP_URL_PATH), '/'); ?>
+  <h4 class="mt-5" id="robots-file">robots.txt and sitemap delivery</h4>
+  <p class="small text-muted">Both are made by the site when they are asked for. Some web servers never pass <code>/robots.txt</code> to the site (ISPConfig's nginx answers it with its own 404 unless a real file exists). Check below, and if robots.txt fails, write it as a real file. The sitemap stays generated: a file would stop listing new products.</p>
+  <?php if (is_array($rCheck)): foreach (['robots' => 'robots.txt', 'sitemap' => 'sitemap.xml'] as $k => $label): $c = $rCheck[$k]; ?>
+  <div class="alert <?= $c['ok'] ? 'alert-success' : 'alert-danger' ?> py-2 mb-2"><?= $c['ok'] ? '&#10003;' : '&#10007;' ?> <a href="<?= $h($c['url']) ?>" target="_blank" rel="noopener"><code><?= $h($label) ?></code></a>: <?= $c['ok'] ? 'search engines get it' : $h($c['note']) ?></div>
+  <?php endforeach; endif; ?>
+  <p>robots.txt file in the site folder:
+    <?php if ($rState === 'none'): ?><strong>none</strong> (the generated one is used where the server asks the site)
+    <?php elseif ($rState === 'managed'): ?><strong>written by this screen</strong>; it is rewritten each time the settings are saved
+    <?php else: ?><strong>made by hand</strong>; this screen leaves it alone and the settings above do not change it<?php endif; ?></p>
+  <?php if ($rSub !== ''): ?><div class="alert alert-info small">This site is in a sub-folder (<code><?= $h($rSub) ?></code>). Search engines only read robots.txt at the root of the domain, so a file here is not used by them.</div><?php endif; ?>
+  <div class="mb-3">
+    <form method="post" class="d-inline"><input type="hidden" name="seo_nonce" value="<?= $h($seo_nonce) ?>"><input type="hidden" name="seo_action" value="robots_check"><button class="btn btn-outline-primary">Check now</button></form>
+    <?php if ($rState !== 'own'): ?><form method="post" class="d-inline"><input type="hidden" name="seo_nonce" value="<?= $h($seo_nonce) ?>"><input type="hidden" name="seo_action" value="robots_write"><button class="btn btn-primary"><?= $rState === 'managed' ? 'Write robots.txt again' : 'Write robots.txt file' ?></button></form><?php endif; ?>
+    <?php if ($rState === 'managed'): ?><form method="post" class="d-inline"><input type="hidden" name="seo_nonce" value="<?= $h($seo_nonce) ?>"><input type="hidden" name="seo_action" value="robots_remove"><button class="btn btn-outline-danger">Remove the file</button></form><?php endif; ?>
+  </div>
+  <details><summary class="small">The robots.txt text these settings make</summary><pre class="border p-2 small bg-light"><?= $h(qp_seo_robots_txt()) ?></pre></details>
   <?php endif; ?>
 </div>
 <?php include __DIR__ . '/inc/footer.php'; exit; ?>
